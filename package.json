@@ -2,7 +2,7 @@
   "name": "opencode-provider-bridge",
   "displayName": "OpenCode Provider Bridge",
   "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "publisher": "ankurmathur",
   "license": "MIT",
   "type": "module",
@@ -81,7 +81,8 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "dev": "npm run build && npm run watch",
-    "package": "npm run clean && npm run build && vsce package"
+    "package": "npm run clean && npm run build && vsce package",
+    "publish": "npm run package && vsce publish"
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.14.0"
