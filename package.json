@@ -1,0 +1,97 @@
+{
+  "name": "opencode-provider-bridge",
+  "displayName": "OpenCode Provider Bridge",
+  "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
+  "version": "0.1.9",
+  "publisher": "ankurmathur",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ankurmathur/opencode-provider-bridge"
+  },
+  "bugs": {
+    "url": "https://github.com/ankurmathur/opencode-provider-bridge/issues"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "opencode",
+    "copilot",
+    "byok",
+    "llm",
+    "provider",
+    "ai"
+  ],
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
+  "pricing": "Free",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "opencode-provider-bridge",
+        "displayName": "OpenCode Providers",
+        "managementCommand": "opencode-provider-bridge.setApiKey"
+      }
+    ],
+    "commands": [
+      {
+        "command": "opencode-provider-bridge.refreshModels",
+        "title": "OpenCode Bridge: Refresh Model List"
+      },
+      {
+        "command": "opencode-provider-bridge.showStatus",
+        "title": "OpenCode Bridge: Show Status"
+      },
+      {
+        "command": "opencode-provider-bridge.setApiKey",
+        "title": "OpenCode Bridge: Configure Provider"
+      },
+      {
+        "command": "opencode-provider-bridge.addProvider",
+        "title": "OpenCode Bridge: Add Provider"
+      },
+      {
+        "command": "opencode-provider-bridge.removeProvider",
+        "title": "OpenCode Bridge: Remove Provider"
+      },
+      {
+        "command": "opencode-provider-bridge.listProviders",
+        "title": "OpenCode Bridge: List Providers"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onLanguageModelChatProvider:opencode-provider-bridge"
+  ],
+  "main": "./out/extension.cjs",
+  "scripts": {
+    "clean": "rimraf out",
+    "compile": "tsc -p ./tsconfig.json",
+    "build": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode",
+    "build:watch": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode --watch",
+    "watch": "tsc -watch -p ./tsconfig.json",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "dev": "npm run build && npm run watch",
+    "package": "npm run clean && npm run build && vsce package"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.104.0",
+    "@vscode/vsce": "^2.10.0",
+    "esbuild": "^0.19.12",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.7.0"
+  }
+}
