@@ -2,7 +2,7 @@
   "name": "opencode-provider-bridge",
   "displayName": "OpenCode Provider Bridge",
   "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "ankurmathur",
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,7 @@
     "url": "https://github.com/ankurmathur/opencode-provider-bridge/issues"
   },
   "engines": {
-    "vscode": "^1.104.0"
+    "vscode": "^1.119.0"
   },
   "categories": [
     "AI",
@@ -34,6 +34,28 @@
   },
   "pricing": "Free",
   "contributes": {
+    "configuration": {
+      "title": "OpenCode Provider Bridge",
+      "properties": {
+        "opencode-provider-bridge.logLevel": {
+          "type": "string",
+          "default": "info",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ],
+          "enumDescriptions": [
+            "Only errors",
+            "Errors and warnings",
+            "Errors, warnings, and info messages",
+            "Everything including verbose debug messages"
+          ],
+          "description": "Log verbosity level for the OpenCode Bridge output panel."
+        }
+      }
+    },
     "languageModelChatProviders": [
       {
         "vendor": "opencode-provider-bridge",
@@ -52,19 +74,15 @@
       },
       {
         "command": "opencode-provider-bridge.setApiKey",
-        "title": "OpenCode Bridge: Configure Provider"
-      },
-      {
-        "command": "opencode-provider-bridge.addProvider",
-        "title": "OpenCode Bridge: Add Provider"
+        "title": "OpenCode Bridge: Set API Key for a Provider"
       },
       {
         "command": "opencode-provider-bridge.removeProvider",
-        "title": "OpenCode Bridge: Remove Provider"
+        "title": "OpenCode Bridge: Remove Provider Key"
       },
       {
-        "command": "opencode-provider-bridge.listProviders",
-        "title": "OpenCode Bridge: List Providers"
+        "command": "opencode-provider-bridge.showStatus",
+        "title": "OpenCode Bridge: Show Provider Status"
       }
     ]
   },
@@ -74,22 +92,24 @@
   "main": "./out/extension.cjs",
   "scripts": {
     "clean": "rimraf out",
-    "compile": "tsc -p ./tsconfig.json",
+    "compile": "npm run clean && tsc -p ./tsconfig.json",
     "build": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode",
     "build:watch": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode --watch",
-    "watch": "tsc -watch -p ./tsconfig.json",
+    "watch": "npm run clean && tsc -watch -p ./tsconfig.json",
     "check-types": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
-    "dev": "npm run build && npm run watch",
+    "dev": "npm run watch",
     "package": "npm run clean && npm run build && vsce package",
     "publish": "npm run package && vsce publish"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^1.14.0"
+    "@ai-sdk/openai-compatible": "^2.0.47",
+    "@opencode-ai/sdk": "^1.14.0",
+    "ai": "^6.0.180"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.104.0",
+    "@types/vscode": "^1.118.0",
     "@vscode/vsce": "^2.10.0",
     "esbuild": "^0.19.12",
     "rimraf": "^5.0.0",

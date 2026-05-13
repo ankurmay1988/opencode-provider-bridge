@@ -55,7 +55,7 @@ let serverTerminal: vscode.Terminal | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
   initLogger();
-  log('activate()');
+  log('activate()', 'info');
   extContext = context;
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -84,65 +84,64 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(`${PKG_NAME}.showStatus`, showStatus),
   );
 
-  // --- Set API Key (legacy management command) ---
+  // --- Set API Key for a Discovered Provider ---
   context.subscriptions.push(
-    vscode.commands.registerCommand(`${PKG_NAME}.setApiKey`, () => {
-      vscode.commands.executeCommand(`${PKG_NAME}.showStatus`);
-    }),
-  );
+    vscode.commands.registerCommand(`${PKG_NAME}.setApiKey`, async () => {
+      const providers = await getProviders(context);
+      if (providers.size === 0) {
+        vscode.window.showWarningMessage('No providers discovered. Start the opencode server first.');
+        return;
+      }
 
-  // --- Add Provider (interactive) ---
-  context.subscriptions.push(
-    vscode.commands.registerCommand(`${PKG_NAME}.addProvider`, async () => {
-      const providerId = await vscode.window.showInputBox({
-        prompt: 'Enter the provider ID (e.g. anthropic, openai, opencode)',
-        placeHolder: 'anthropic',
-        ignoreFocusOut: true,
+      const items = [...providers.entries()].map(([id, p]) => ({
+        label: id,
+        description: p.hasApiKey ? '✓ key set' : 'no key',
+        detail: p.providerInfo.name,
+        hasKey: p.hasApiKey,
+      }));
+
+      const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Select a provider to set or change its API key',
       });
-      if (!providerId) return;
+      if (!selected) return;
 
-      const apiKey = await vscode.window.showInputBox({
-        prompt: `Enter API key for ${providerId}`,
+      const key = await vscode.window.showInputBox({
+        title: `API Key for ${selected.label} (${selected.detail})`,
         password: true,
         ignoreFocusOut: true,
+        validateInput: (v) => v.trim().length > 0 ? null : 'Key cannot be empty',
       });
-      if (!apiKey) return;
+      if (!key) return;
 
-      await context.secrets.store(`${PKG_NAME}.key.${providerId}`, apiKey);
+      await context.secrets.store(`${PKG_NAME}.key.${selected.label}`, key);
       cachedProviders = null;
       provider.fireChange();
-      vscode.window.showInformationMessage(`OpenCode Bridge: Saved key for "${providerId}". Refresh models to use it.`);
+      vscode.window.showInformationMessage(`Saved key for "${selected.label}".`);
     }),
   );
 
-  // --- Remove Provider ---
+  // --- Remove Provider Key ---
   context.subscriptions.push(
     vscode.commands.registerCommand(`${PKG_NAME}.removeProvider`, async () => {
       const providers = await getProviders(context);
-      const picks = [...providers.keys()].map(id => ({ label: id, description: providers.get(id)!.providerInfo.name }));
-      const selected = await vscode.window.showQuickPick(picks, { placeHolder: 'Select provider to remove' });
+      if (providers.size === 0) {
+        vscode.window.showWarningMessage('No providers to remove.');
+        return;
+      }
+      const picks = [...providers.entries()]
+        .filter(([, p]) => p.hasApiKey)
+        .map(([id, p]) => ({ label: id, description: p.providerInfo.name }));
+      if (picks.length === 0) {
+        vscode.window.showInformationMessage('No providers with stored keys to remove.');
+        return;
+      }
+      const selected = await vscode.window.showQuickPick(picks, { placeHolder: 'Select provider key to remove' });
       if (!selected) return;
 
       await context.secrets.delete(`${PKG_NAME}.key.${selected.label}`);
       cachedProviders = null;
       provider.fireChange();
-      vscode.window.showInformationMessage(`OpenCode Bridge: Removed key for "${selected.label}".`);
-    }),
-  );
-
-  // --- List Providers ---
-  context.subscriptions.push(
-    vscode.commands.registerCommand(`${PKG_NAME}.listProviders`, async () => {
-      const providers = await getProviders(context);
-      if (providers.size === 0) {
-        vscode.window.showWarningMessage('No OpenCode providers configured. Use "Add Provider" or run `opencode /connect` in terminal.');
-        return;
-      }
-      const lines = [...providers.entries()].map(([id, p]) => {
-        const models = p.providerInfo.models;
-        return `${id} (${p.providerInfo.name}) — ${Object.keys(models).length} model(s)`;
-      });
-      vscode.window.showInformationMessage(`OpenCode Bridge providers:\n${lines.join('\n')}`);
+      vscode.window.showInformationMessage(`Removed key for "${selected.label}".`);
     }),
   );
 }
@@ -155,7 +154,7 @@ export function deactivate() {
     serverTerminal = null;
   }
   serverPort = null;
-  log(` deactivated — server terminal closed`);
+  log(`deactivated — server terminal closed`, 'info');
 }
 
 // ---------------------------------------------------------------------------
@@ -167,38 +166,34 @@ export function deactivate() {
  * and wait for it to be ready. Returns the port number or null.
  */
 async function ensureOpencodeServer(): Promise<number | null> {
-  // Use cached port if still alive
   if (serverPort) {
     if (await isServerAlive(serverPort)) return serverPort;
-    log(` Cached port ${serverPort} is dead, reconnecting...`);
+    log(`Cached port ${serverPort} is dead, reconnecting...`, 'info');
     serverPort = null;
   }
 
-  // Check default port
   if (await isServerAlive(DEFAULT_PORT)) {
-    log(` Server found on default port ${DEFAULT_PORT}`);
+    log(`Server found on default port ${DEFAULT_PORT}`, 'info');
     serverPort = DEFAULT_PORT;
     return DEFAULT_PORT;
   }
 
-  // Launch headless server in hidden terminal
-  log(` Starting headless server...`);
+  log(`Starting headless server...`, 'info');
   const port = await launchTerminal();
   if (!port) return null;
 
-  // Wait for server to be ready (poll up to 15s)
-  log(` Waiting for server on port ${port}...`);
+  log(`Waiting for server on port ${port}...`, 'info');
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await sleep(300);
     if (await isServerAlive(port)) {
-      log(` Server ready on port ${port}`);
+      log(`Server ready on port ${port}`, 'info');
       serverPort = port;
       return port;
     }
   }
 
-  log(` Server did not start within timeout.`);
+  log(`Server did not start within timeout.`, 'warn');
   return null;
 }
 
@@ -287,16 +282,10 @@ async function getProviders(context: vscode.ExtensionContext): Promise<Map<strin
 // ---------------------------------------------------------------------------
 
 async function showStatus(): Promise<void> {
-  // We need context for getProviders — look it up from the extension
-  const ext = vscode.extensions.getExtension('community.opencode-provider-bridge');
-  if (!ext) return;
-
-  // getProviders was already called with context during activation,
-  // so cachedProviders should be populated. Show from cache if available.
   const providers = cachedProviders;
   if (!providers || providers.size === 0) {
     vscode.window.showWarningMessage(
-      'No OpenCode providers found. Use "OpenCode Bridge: Add Provider" or run `opencode /connect` in terminal.',
+      'No OpenCode providers found. Use "OpenCode Bridge: Set API Key" to configure one.',
     );
     return;
   }
@@ -304,11 +293,12 @@ async function showStatus(): Promise<void> {
   const details: string[] = [];
   for (const [id, instance] of providers) {
     const modelCount = instance.providerInfo.models ? Object.keys(instance.providerInfo.models).length : 0;
-    details.push(`${instance.providerInfo.name} (${modelCount} models)`);
+    const keyStatus = instance.hasApiKey ? '✓' : '✗';
+    details.push(`${id} (${instance.providerInfo.name}) ${keyStatus} ${modelCount} models`);
   }
 
   vscode.window.showInformationMessage(
-    `OpenCode Bridge: ${providers.size} provider(s): ${details.join(', ')}`,
+    `OpenCode Bridge: ${providers.size} provider(s)\n${details.join('\n')}`,
   );
 }
 

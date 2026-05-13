@@ -11,7 +11,7 @@
       "outFiles": [
         "${workspaceFolder}/out/**/*.*"
       ],
-      "preLaunchTask": "npm: build"
+      "preLaunchTask": "npm: compile"
     }
   ]
 }
