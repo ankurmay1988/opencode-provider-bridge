@@ -20,7 +20,7 @@ function getThreshold(): number {
 }
 
 export function log(msg: string, level: LogLevel = 'info'): void {
-  if (LEVELS[level] > getThreshold()) return;
+  if (LEVELS[level] > getThreshold()) {return;}
   const c = initLogger();
   c.appendLine(`[${level.toUpperCase().padEnd(5)} ${timestamp()}] ${msg}`);
 }

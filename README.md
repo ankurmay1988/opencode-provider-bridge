@@ -1,47 +1,51 @@
 # OpenCode Provider Bridge
 
-Brings all [OpenCode](https://opencode.ai)-configured AI providers into VS Code Copilot's model picker. Uses the `@ai-sdk/openai-compatible` SDK for reliable tool calling and streaming.
+Bring all your [OpenCode](https://opencode.ai)-configured AI providers into VS Code's Chat model picker.
+
+Any provider you've configured in OpenCode — Zen, Go, Anthropic, OpenAI, Google, NVIDIA, Vultr, and more — appears as a selectable model in the chat dropdown, ready to use alongside GitHub Copilot.
+
+![VS Code Chat model picker with OpenCode providers](https://github.com/ankurmathur/opencode-provider-bridge/raw/main/assets/screenshot.png)
+
+## Quick Start
+
+1. **Install** the extension from the VS Code Marketplace
+2. **Configure** providers in OpenCode: `opencode /connect`
+3. **Open** VS Code Chat → select a model from the dropdown
+
+That's it. Providers are auto-discovered from a running `opencode serve` or your local `auth.json` file.
 
 ## Features
 
-- **All providers in one picker** — any provider configured in OpenCode appears in VS Code's model dropdown
-- **Zero config** — auto-discovers providers from a running opencode server or local auth file
-- **Secure key storage** — per-provider API keys stored in VS Code's encrypted SecretStorage
-- **Server auto-start** — launches `opencode serve` headlessly if not running
-- **Token usage display** — status bar shows prompt/completion tokens per response
-- **Reliable tool calling** — uses `@ai-sdk/openai-compatible` for proper streaming tool call argument accumulation
-- **Reasoning support** — thinking/reasoning content rendered natively via `LanguageModelThinkingPart` (VS Code 1.119+)
+- **All providers, one picker** — Zen, Go, Anthropic, OpenAI, Google, and any other OpenCode provider
+- **Zero config** — reads your existing OpenCode setup
+- **Secure keys** — API keys stored in VS Code's encrypted SecretStorage
+- **Real-time reasoning** — thinking content streams as it's generated
+- **Token usage** — status bar shows prompt/completion tokens per response
+- **Tool calling** — full support for tools with schema simplification
 
 ## Requirements
 
-- VS Code 1.119+
-- [OpenCode CLI](https://opencode.ai) installed
-
-## Getting Started
-
-1. Configure providers in OpenCode: `opencode /connect`
-2. Install this extension
-3. Open VS Code Chat → select a model from the dropdown
-4. If a provider has no API key, you'll be prompted to enter one on first use
+- VS Code **1.120+**
+- [OpenCode CLI](https://opencode.ai) installed and configured (`opencode /connect`)
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
+| Command | What it does |
+|---------|--------------|
 | `OpenCode Bridge: Refresh Model List` | Re-discover providers and models |
 | `OpenCode Bridge: Show Provider Status` | Show providers, key status, and model counts |
-| `OpenCode Bridge: Set API Key for a Provider` | Pick a discovered provider and set its API key |
-| `OpenCode Bridge: Remove Provider Key` | Remove a stored API key for a provider |
+| `OpenCode Bridge: Set API Key for a Provider` | Set or change a provider's API key |
+| `OpenCode Bridge: Remove Provider Key` | Remove a stored API key |
 
 ## Extension Settings
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `opencode-provider-bridge.logLevel` | Log verbosity: `error`, `warn`, `info`, or `debug` | `info` |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `opencode-provider-bridge.logLevel` | `info` | Log verbosity: `error`, `warn`, `info`, or `debug` |
 
 ## Architecture
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for full documentation on provider discovery, API calling, streaming, and key management.
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for provider discovery, API calling, streaming, and key management details.
 
 ## License
 

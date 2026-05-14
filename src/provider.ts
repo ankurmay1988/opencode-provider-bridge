@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
+
+import type { ModelMessage, ToolSet } from 'ai';
+import { ModelsDevModel, ModelsDevProvider } from './opencodeConfig.js';
+import { jsonSchema, streamText, tool } from 'ai';
+
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { streamText, tool, jsonSchema } from 'ai';
-import type { ToolSet, ModelMessage } from 'ai';
-import { ModelsDevProvider, ModelsDevModel } from './opencodeConfig.js';
 import { log } from './logger.js';
 
 const REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
@@ -11,7 +13,9 @@ const SAFE_SCHEMA_KEYS = new Set([
   'type', 'properties', 'items', 'required', 'description',
   'enum', 'format', 'default',
   'minimum', 'maximum', 'minLength', 'maxLength',
-  'minItems', 'maxItems',
+  'minItems', 'maxItems', 'additionalProperties',
+  'anyOf', 'oneOf', 'allOf', '$ref', 'not',
+  'title', 'examples', 'pattern',
 ]);
 
 function simplifySchema(schema: unknown, label = ''): Record<string, unknown> {
@@ -21,10 +25,21 @@ function simplifySchema(schema: unknown, label = ''): Record<string, unknown> {
   const rec = schema as Record<string, unknown>;
   const rawKeys = Object.keys(rec);
 
+  // If the schema uses anyOf/oneOf/allOf, preserve them recursively
+  for (const combinator of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (rec[combinator] && Array.isArray(rec[combinator])) {
+      return {
+        [combinator]: (rec[combinator] as unknown[]).map((sub, i) =>
+          simplifySchema(sub, `${label}.${combinator}[${i}]`),
+        ),
+      };
+    }
+  }
+
   if (rec.type === 'object' || rec.type === undefined) {
     const out: Record<string, unknown> = { type: 'object' };
     for (const key of Object.keys(rec)) {
-      if (!SAFE_SCHEMA_KEYS.has(key)) continue;
+      if (!SAFE_SCHEMA_KEYS.has(key)) {continue;}
       const val = rec[key];
       if (key === 'properties' && val && typeof val === 'object' && !Array.isArray(val)) {
         const cleaned: Record<string, unknown> = {};
@@ -65,13 +80,39 @@ function simplifySchema(schema: unknown, label = ''): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Extract plain text from an AI SDK ToolResult for rendering in the chat UI.
+ * ToolResult.content is typically an array of { type: 'text', text: '...' } parts.
+ */
+function extractTextFromToolResult(result: unknown): string {
+  if (!result || typeof result !== 'object') {return '';}
+  const rec = result as Record<string, unknown>;
+  if (typeof rec.text === 'string') {return rec.text;}
+  if (Array.isArray(rec.content)) {
+    return rec.content
+      .map((part: unknown) => {
+        if (part && typeof part === 'object') {
+          const p = part as Record<string, unknown>;
+          if (p.type === 'text' && typeof p.text === 'string') {return p.text;}
+          if (p.type === 'text' && typeof p.value === 'string') {return p.value;}
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
 export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
 
   lastUsage: { prompt: number; completion: number } | null = null;
-  private currentReasoning = '';
   private aiProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+
+  /** Cache of simplified tool input schemas keyed by tool name. */
+  private toolSchemaCache = new Map<string, Record<string, unknown>>();
 
   constructor(
     readonly providerInfo: ModelsDevProvider,
@@ -93,7 +134,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
   }
 
   private getProvider() {
-    if (this.aiProvider) return this.aiProvider;
+    if (this.aiProvider) {return this.aiProvider;}
 
     const knownApis: Record<string, string> = {
       opencode: 'https://opencode.ai/zen/v1',
@@ -140,25 +181,22 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    this.currentReasoning = '';
+    let currentReasoning = '';
+    let reasoningEnded = false;
 
-    const modelMeta = this.enabledModels.get(model.id);
-    const coreMessages = this.toModelMessages(messages, modelMeta?.reasoning ?? false);
+    const coreMessages = this.toModelMessages(messages);
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
 
     const tools: ToolSet = {};
     if (options.tools?.length) {
       log(`[opencode-provider-bridge] Building ${options.tools.length} tool(s)`, 'debug');
       for (const t of options.tools) {
-        const rawKeys = t.inputSchema && typeof t.inputSchema === 'object'
-          ? Object.keys(t.inputSchema as Record<string, unknown>)
-          : [];
-        log(`[opencode-provider-bridge] Tool: ${t.name} raw_keys=[${rawKeys.join(',')}]`, 'debug');
-
-        const params = simplifySchema(t.inputSchema, t.name);
-
-        const outKeys = Object.keys(params);
-        log(`[opencode-provider-bridge] Tool: ${t.name} simplified_keys=[${outKeys.join(',')}]`, 'debug');
+        let params = this.toolSchemaCache.get(t.name);
+        if (!params) {
+          params = simplifySchema(t.inputSchema, t.name);
+          this.toolSchemaCache.set(t.name, params);
+          log(`[opencode-provider-bridge] Tool: ${t.name} simplified`, 'debug');
+        }
 
         tools[t.name] = tool({
           description: t.description ?? '',
@@ -179,6 +217,11 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
     log(`[opencode-provider-bridge] Calling streamText model=${model.id} tools=${Object.keys(tools).length}`, 'info');
 
+    // Progress type assertion: LanguageModelThinkingPart is available in the
+    // VS Code 1.120+ runtime even if @types/vscode doesn't include it in
+    // LanguageModelResponsePart yet.
+    const report = progress.report.bind(progress) as (part: unknown) => void;
+
     try {
       const result = streamText({
         model: languageModel,
@@ -195,16 +238,49 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         switch (part.type) {
           case 'text-delta':
             hasText = true;
-            progress.report(new vscode.LanguageModelTextPart(part.text));
+            report(new vscode.LanguageModelTextPart(part.text));
             break;
+
           case 'reasoning-delta':
-            this.currentReasoning += part.text;
+            currentReasoning += part.text;
+            // Report each reasoning chunk immediately so VS Code's UI
+            // shows thinking/reasoning content in real-time.
+            report(new vscode.LanguageModelThinkingPart(part.text));
             break;
+
+          case 'reasoning-start':
+            // Signal VS Code that reasoning/thinking has started.
+            // This triggers the thinking animation in the chat response.
+            report(new vscode.LanguageModelThinkingPart(''));
+            break;
+
+          case 'reasoning-end':
+            reasoningEnded = true;
+            // Signal VS Code that reasoning is complete.
+            // This closes the thinking animation in the chat response.
+            report(new vscode.LanguageModelThinkingPart('', undefined, { vscode_reasoning_done: true }));
+            break;
+
           case 'tool-call':
             hasToolCall = true;
             log(`[opencode-provider-bridge] TOOL_OUT: ${part.toolName} id=${part.toolCallId}`, 'debug');
-            progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, part.input as Record<string, unknown>));
+            report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, part.input as Record<string, unknown>));
             break;
+
+          case 'tool-result':
+            // Render tool execution result in the chat UI so the user can see
+            // what the tool returned between the model's response.
+            if (part.output) {
+              const resultText = extractTextFromToolResult(part.output);
+              if (resultText) {
+                report(new vscode.LanguageModelToolResultPart(
+                  part.toolCallId,
+                  [new vscode.LanguageModelTextPart(resultText)],
+                ));
+              }
+            }
+            break;
+
           case 'finish': {
             const { totalUsage } = part;
             if (totalUsage) {
@@ -215,6 +291,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
             }
             break;
           }
+
           case 'error':
             log(`[opencode-provider-bridge] Stream error: ${part.error}`, 'error');
             throw part.error instanceof Error
@@ -223,12 +300,28 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         }
       }
 
-      if (this.currentReasoning && typeof vscode.LanguageModelThinkingPart === 'function') {
-        progress.report(new vscode.LanguageModelThinkingPart(this.currentReasoning, undefined, {}));
+      // Report final aggregated reasoning for multi-turn context.
+      // The real-time chunks above already rendered the thinking content;
+      // this provides the complete text as data for subsequent turns.
+      if (currentReasoning && !reasoningEnded) {
+        report(new vscode.LanguageModelThinkingPart(
+          '',
+          undefined,
+          { _completeThinking: currentReasoning, vscode_reasoning_done: true },
+        ));
+      } else if (currentReasoning && reasoningEnded) {
+        // reasoning-end already emitted vscode_reasoning_done.
+        // Only emit _completeThinking as data to avoid double-triggering the UI.
+        report(new vscode.LanguageModelDataPart(
+          new TextEncoder().encode(JSON.stringify({
+            _completeThinking: currentReasoning,
+          })),
+          REASONING_CONTENT_MIME,
+        ));
       }
 
       if (this.lastUsage) {
-        progress.report(new vscode.LanguageModelDataPart(
+        report(new vscode.LanguageModelDataPart(
           new TextEncoder().encode(JSON.stringify({
             prompt_tokens: this.lastUsage.prompt,
             completion_tokens: this.lastUsage.completion,
@@ -238,12 +331,33 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         ));
       }
 
-      if (!hasText && !hasToolCall && !this.currentReasoning) {
+      if (!hasText && !hasToolCall && !currentReasoning) {
         log(`[opencode-provider-bridge] Empty response — reporting minimal text to prevent Copilot Unknown error`, 'warn');
-        progress.report(new vscode.LanguageModelTextPart(''));
+        report(new vscode.LanguageModelTextPart(''));
       }
     } catch (err) {
-      if (err instanceof vscode.LanguageModelError) throw err;
+      if (err instanceof vscode.LanguageModelError) {throw err;}
+
+      // Classify common error types
+      const message = (err as Error).message?.toLowerCase() ?? '';
+      const statusCode = (err as any).status ?? (err as any).statusCode ?? 0;
+
+      if (statusCode === 429 || message.includes('rate limit') || message.includes('too many')) {
+        throw vscode.LanguageModelError.Blocked(
+          `${this.providerInfo.name}: rate limited. Please wait and try again.`,
+        );
+      }
+      if (statusCode === 401 || statusCode === 403 || message.includes('unauthorized') || message.includes('invalid api key')) {
+        throw vscode.LanguageModelError.NotFound(
+          `${this.providerInfo.name}: invalid API key. Use "OpenCode Bridge: Set API Key" to update it.`,
+        );
+      }
+      if (statusCode === 402 || message.includes('quota') || message.includes('insufficient_quota')) {
+        throw new vscode.LanguageModelError(
+          `${this.providerInfo.name}: quota exceeded. Please check your plan and billing.`,
+        );
+      }
+
       throw new vscode.LanguageModelError(
         `${this.providerInfo.name} request failed: ${(err as Error).message}`,
       );
@@ -261,7 +375,6 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
   private toModelMessages(
     messages: readonly vscode.LanguageModelChatRequestMessage[],
-    _hasReasoning: boolean,
   ): ModelMessage[] {
     const result: ModelMessage[] = [];
     const SystemRole = (vscode.LanguageModelChatMessageRole as any).System;

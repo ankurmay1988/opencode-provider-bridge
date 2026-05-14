@@ -1,11 +1,10 @@
 {
   "name": "opencode-provider-bridge",
-  "displayName": "OpenCode Provider Bridge",
+  "displayName": "Opencode Provider Bridge",
   "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "ankurmathur",
   "license": "MIT",
-  "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/ankurmathur/opencode-provider-bridge"
@@ -13,8 +12,9 @@
   "bugs": {
     "url": "https://github.com/ankurmathur/opencode-provider-bridge/issues"
   },
+  "type": "module",
   "engines": {
-    "vscode": "^1.119.0"
+    "vscode": "^1.120.0"
   },
   "categories": [
     "AI",
@@ -33,6 +33,10 @@
     "theme": "dark"
   },
   "pricing": "Free",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.cjs",
   "contributes": {
     "configuration": {
       "title": "OpenCode Provider Bridge",
@@ -60,7 +64,20 @@
       {
         "vendor": "opencode-provider-bridge",
         "displayName": "OpenCode Providers",
-        "managementCommand": "opencode-provider-bridge.setApiKey"
+        "configuration": {
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "description": "API key for OpenCode providers",
+              "defaultSnippets": [
+                {
+                  "body": "sk-..."
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "commands": [
@@ -79,29 +96,19 @@
       {
         "command": "opencode-provider-bridge.removeProvider",
         "title": "OpenCode Bridge: Remove Provider Key"
-      },
-      {
-        "command": "opencode-provider-bridge.showStatus",
-        "title": "OpenCode Bridge: Show Provider Status"
       }
     ]
   },
-  "activationEvents": [
-    "onLanguageModelChatProvider:opencode-provider-bridge"
-  ],
-  "main": "./out/extension.cjs",
   "scripts": {
-    "clean": "rimraf out",
-    "compile": "npm run clean && tsc -p ./tsconfig.json",
-    "build": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode",
-    "build:watch": "node node_modules/esbuild/bin/esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --outfile=out/extension.cjs --external:vscode --watch",
-    "watch": "npm run clean && tsc -watch -p ./tsconfig.json",
+    "clean": "rimraf dist",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src --ext .ts",
-    "dev": "npm run watch",
-    "package": "npm run clean && npm run build && vsce package",
-    "publish": "npm run package && vsce publish",
-    "publish:pre": "npm run package && vsce publish --pre-release"
+    "lint": "eslint src",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch": "npm run clean && npm-run-all -p watch:*",
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run clean && npm run check-types && npm run lint && node esbuild.js",
+    "package": "npm run clean && npm run check-types && npm run lint && node esbuild.js --production"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.47",
@@ -109,11 +116,17 @@
     "ai": "^6.0.180"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/vscode": "^1.118.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.19",
+    "@types/vscode": "^1.120.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^2.10.0",
-    "esbuild": "^0.19.12",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
+    "npm-run-all": "^4.1.5",
     "rimraf": "^5.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
   }
 }

@@ -31,11 +31,13 @@
 //   it Tier 3 shows only "default" model names — useless to the user.
 // =============================================================================
 
-import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
+
+import type { Model, Provider } from '@opencode-ai/sdk';
+
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import type { Provider, Model } from '@opencode-ai/sdk';
 import { log as logger } from './logger.js';
 
 const PKG_NAME = 'opencode-provider-bridge';
@@ -142,7 +144,7 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
     models.push([rawId, sdkModelToDevModel(model)]);
   }
 
-  if (models.length === 0) return null;
+  if (models.length === 0) {return null;}
 
   const baseURL = sp.options?.baseURL as string | undefined;
   const apiURL = sp.options?.api as string | undefined;
@@ -206,7 +208,7 @@ export async function trySdkProviders(port?: number, logPrefix?: string): Promis
       // If the SDK didn't return an API endpoint, check known providers
       if (!entry.provider.api) {
         const known = KNOWN_PROVIDERS[sp.id];
-        if (known) entry.provider.api = known.api;
+        if (known) {entry.provider.api = known.api;}
       }
       configured.set(sp.id, entry);
       const keyStatus = sp.key ? 'keyed' : 'no key';
@@ -345,16 +347,16 @@ export async function fallbackProviders(): Promise<Map<string, ProviderEntry>> {
     fetchModelsCatalogger(),
   ]);
   const ids = Object.keys(auth);
-  logger(` auth.json: ${ids.length} provider(s) — ${ids.join(', ') || '(none)'}`);
+  logger(` auth.json: ${ids.length} provider(s) - ${ids.join(', ') || '(none)'}`);
 
   // Tier 2: models.dev + auth.json
   const catalogResult = filterModelsForProviders(catalog, auth);
-  if (catalogResult) return catalogResult;
+  if (catalogResult) {return catalogResult;}
 
   // Tier 3: bare fallback
-  logger(` TIER 3: bare fallback — no catalog available`);
+  logger(` TIER 3: bare fallback - no catalog available`);
   const bareResult = makeBareFallback(auth);
-  if (bareResult) return bareResult;
+  if (bareResult) {return bareResult;}
 
   logger(` No providers found.`);
   return new Map();
