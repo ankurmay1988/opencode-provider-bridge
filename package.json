@@ -2,7 +2,7 @@
   "name": "opencode-provider-bridge",
   "displayName": "Opencode Provider Bridge",
   "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "ankurmathur",
   "license": "MIT",
   "repository": {
