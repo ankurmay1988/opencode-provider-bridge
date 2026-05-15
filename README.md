@@ -4,8 +4,6 @@ Bring all your [OpenCode](https://opencode.ai)-configured AI providers into VS C
 
 Any provider you've configured in OpenCode — Zen, Go, Anthropic, OpenAI, Google, NVIDIA, Vultr, and more — appears as a selectable model in the chat dropdown, ready to use alongside GitHub Copilot.
 
-![VS Code Chat model picker with OpenCode providers](https://github.com/ankurmathur/opencode-provider-bridge/raw/main/assets/screenshot.png)
-
 ## Quick Start
 
 1. **Install** the extension from the VS Code Marketplace
@@ -17,11 +15,13 @@ That's it. Providers are auto-discovered from a running `opencode serve` or your
 ## Features
 
 - **All providers, one picker** — Zen, Go, Anthropic, OpenAI, Google, and any other OpenCode provider
+- **Multi-SDK auto-routing** — uses the correct AI SDK per model (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) based on opencode registry metadata
 - **Zero config** — reads your existing OpenCode setup
 - **Secure keys** — API keys stored in VS Code's encrypted SecretStorage
 - **Real-time reasoning** — thinking content streams as it's generated
 - **Token usage** — status bar shows prompt/completion tokens per response
-- **Tool calling** — full support for tools with schema simplification
+- **Tool calling** — full support for tools with schema simplification and cross-turn name resolution
+- **Debug logging** — set `logLevel` to `debug` to see raw SSE stream data, routing decisions, and request payloads
 
 ## Requirements
 
@@ -43,10 +43,19 @@ That's it. Providers are auto-discovered from a running `opencode serve` or your
 |---------|---------|-------------|
 | `opencode-provider-bridge.logLevel` | `info` | Log verbosity: `error`, `warn`, `info`, or `debug` |
 
-## Architecture
+## Source Files
 
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for provider discovery, API calling, streaming, and key management details.
+| File | Purpose |
+|------|---------|
+| `extension.ts` | Extension entry point, server management, BridgeProvider |
+| `provider.ts` | OpencodeModelProvider — multi-SDK routing, message conversion, streaming |
+| `opencodeConfig.ts` | 3-tier provider/model discovery (SDK → catalog → bare fallback) |
+| `providerUtils.ts` | Schema simplification, tool result text extraction |
+| `verboseFetch.ts` | SSE stream logging fetch wrapper (debug level) |
+| `logger.ts` | Leveled logging with VS Code OutputChannel |
 
-## License
+## Changelog
+
+See **[CHANGELOG.md](CHANGELOG.md)** for the full release history.
 
 MIT

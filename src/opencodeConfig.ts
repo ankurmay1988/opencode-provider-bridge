@@ -62,6 +62,8 @@ export interface ModelsDevModel {
   family: string;
   /** Exact API base URL from opencode's model registry (SDK Model.api.url). */
   apiUrl?: string;
+  /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
+  apiNpm?: string;
   tool_call?: boolean;
   reasoning?: boolean;
   attachment?: boolean;
@@ -121,6 +123,7 @@ function sdkModelToDevModel(model: Model): ModelsDevModel {
     name: model.name,
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
+    apiNpm: model.api?.npm,            // exact npm package from opencode's registry
     tool_call: model.capabilities.toolcall,
     reasoning: model.capabilities.reasoning,
     attachment: model.capabilities.attachment,

@@ -1,6 +1,8 @@
 # Architecture — OpenCode Provider Bridge
 
-A VS Code extension that brings all [opencode](https://opencode.ai)-configured AI providers (Anthropic, OpenAI, Google, NVIDIA, Vultr, Zen, Go, etc.) into VS Code's Chat model picker so you can use them alongside GitHub Copilot or as your primary chat models. Uses `@ai-sdk/openai-compatible` under the hood for reliable OpenAI-compatible API calls.
+A VS Code extension that brings all [opencode](https://opencode.ai)-configured AI providers (Anthropic, OpenAI, Google, NVIDIA, Vultr, Zen, Go, etc.) into VS Code's Chat model picker so you can use them alongside GitHub Copilot or as your primary chat models.
+
+Uses multiple Vercel AI SDK packages (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) under the hood, automatically selecting the correct SDK per model based on the opencode provider registry metadata (`apiNpm`).
 
 ```mermaid
 flowchart TB
@@ -14,9 +16,11 @@ flowchart TB
             launch["launchTerminal()<br/>opencode serve --port X<br/>hideFromUser: true"]
         end
 
-        cache["getProviders()<br/>cachedProviders + two-tier cache"]
+        cache["getProviders()<br/>cachedProviders + three-tier discovery"]
         config["opencodeConfig.ts<br/>SDK discovery + Tiers 2/3 fallback"]
-        prov["provider.ts<br/>OpencodeModelProvider<br/>@ai-sdk/openai-compatible + streamText"]
+        prov["provider.ts<br/>OpencodeModelProvider<br/>getLanguageModel() routes by apiNpm"]
+        utils["providerUtils.ts<br/>simplifySchema + extractTextFromToolResult"]
+        verbose["verboseFetch.ts<br/>SSE stream logging wrapper"]
         logger["logger.ts<br/>verbosity-gated log()"]
 
         ext --> ServerMgmt
@@ -25,6 +29,8 @@ flowchart TB
         cache --creates--> prov
         ext --uses--> logger
         prov --uses--> logger
+        prov --uses--> utils
+        prov --uses--> verbose
     end
 
     subgraph Discovery["Discovery Sources"]
@@ -33,24 +39,25 @@ flowchart TB
     end
 
     subgraph Execution["AI SDK (bundled)"]
-        aisdk["@ai-sdk/openai-compatible<br/>createOpenAICompatible()"]
+        direction TB
+        oai["@ai-sdk/openai-compatible<br/>createOpenAICompatible()<br/>→ /chat/completions"]
+        anth["@ai-sdk/anthropic<br/>createAnthropic()<br/>→ /messages"]
+        google["@ai-sdk/google<br/>createGoogleGenerativeAI()<br/>→ /models/{model}"]
         ai["ai SDK<br/>streamText() + tool() + jsonSchema()"]
-        provider["OpenAICompatibleChatLanguageModel<br/>doStream()"]
     end
 
     subgraph Secrets["Secret Storage"]
         ss["vscode.SecretStorage<br/>encrypted API keys"]
-        prompt["promptForKey()<br/>interactive dialog"]
     end
 
     config --> sdk
     config -.-> auth
-    prov --> aisdk
-    aisdk --> ai
-    ai --> provider
-    cache -.-> ss
-    ext -.-> prompt
-    sdk --> srv["opencode Server :PORT"]
+    prov --> oai
+    prov --> anth
+    prov --> google
+    oai --> ai
+    anth --> ai
+    google --> ai
 ```
 
 ---
@@ -143,7 +150,9 @@ The `BridgeProvider` implements `vscode.LanguageModelChatProvider` and acts as a
 ---
 
 ## 4. Provider Discovery — `src/opencodeConfig.ts`
+The opencode SDK returns per-model metadata with `api.url` (the exact API endpoint for that model) and `api.npm` (the AI SDK package to use for that model). This is used by `provider.ts` for SDK routing.
 
+### Tiers
 Two-tier fallback: SDK → models.dev + auth.json → bare fallback. No provider synthesis — only shows what opencode reports.
 
 ### Types
@@ -171,22 +180,64 @@ Every auth.json entry gets one placeholder model with `tool_call: true`.
 
 ## 5. Per-Provider Implementation — `src/provider.ts`
 
-Each opencode-configured provider gets its own `OpencodeModelProvider` instance. Uses `@ai-sdk/openai-compatible` for the HTTP layer instead of manual fetch/SSE parsing.
+Each opencode-configured provider gets its own `OpencodeModelProvider` instance.
+Uses multiple AI SDK packages (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`,
+`@ai-sdk/google`) with auto-routing via `getLanguageModel()` based on per-model
+`apiNpm` metadata from the opencode provider registry.
 
 ### Dependencies
 
 ```typescript
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool, jsonSchema } from 'ai';
+import { simplifySchema, extractTextFromToolResult } from './providerUtils.js';
+import { createVerboseFetch } from './verboseFetch.js';
 ```
+
+### SDK Routing (`getLanguageModel()`)
+
+Routes each model to the correct AI SDK based on `apiNpm` from opencode registry:
+
+| `apiNpm` | SDK | Auth Header | Endpoint |
+|---|---|---|---|
+| `@ai-sdk/openai-compatible` | `createOpenAICompatible()` | `Authorization: Bearer` | `/chat/completions` |
+| `@ai-sdk/anthropic` | `createAnthropic()` | `Authorization: Bearer` | `/messages` |
+| `@ai-sdk/google` | `createGoogleGenerativeAI()` | `x-goog-api-key` | `/models/{modelId}` |
+| unknown / not set | `createOpenAICompatible()` (default) | `Authorization: Bearer` | `/chat/completions` |
+
+Each SDK provider is cached as a class field and lazily created on first use.
+All providers are re-created when `setApiKey()` is called.
 
 ### API Call Flow
 
-1. **Create provider**: `createOpenAICompatible({ name, baseURL, apiKey })` — handles auth headers, URL formatting
+1. **Select SDK**: `getLanguageModel(modelId)` routes by `apiNpm`, returns `LanguageModelV3`
 2. **Convert messages**: VS Code `LanguageModelChatRequestMessage[]` → AI SDK `ModelMessage[]` via `toModelMessages()`
-3. **Build tools**: VS Code `LanguageModelChatTool[]` → AI SDK `ToolSet` via `tool({ inputSchema: jsonSchema(params) })`. Tool schemas are **cached** by name to avoid re-simplification on repeated calls.
-4. **Stream**: `streamText({ model, messages, tools, toolChoice })` — SDK manages HTTP, streaming, tool call accumulation
+3. **Build tools**: VS Code `LanguageModelChatTool[]` → AI SDK `ToolSet` via `tool({ inputSchema: jsonSchema(params) })`. Tool schemas are **cached** by name in `toolSchemaCache` to avoid re-simplification.
+4. **Stream**: `streamText({ model: languageModel, messages, tools, toolChoice })` — SDK manages HTTP, streaming, tool call accumulation
 5. **Emit parts**: Iterate `fullStream` and map each event to the corresponding VS Code response part
+
+### Tool Name Resolution
+
+`LanguageModelToolResultPart` has **no `.name` property** in VS Code's API (confirmed
+against the built-in BYOK providers). The extension uses a `toolCallNameCache`
+(`Map<toolCallId, toolName>`) populated when `ToolCallPart` is processed and
+looked up when `ToolResultPart` is processed. This works because `toModelMessages()`
+processes all messages in chronological order — assistant messages (with tool calls)
+always precede user messages (with tool results).
+
+### Verbose Fetch Wrapper
+
+The `createVerboseFetch()` function from `verboseFetch.ts` wraps `globalThis.fetch`
+and intercepts SSE streaming responses at debug log level:
+- HTTP method + URL
+- Request body (truncated to 2KB)
+- Response status + content-type
+- Each SSE event's `data:` line (truncated to 500 chars per line) with event counter
+- Stream end notification with total event count
+
+Set `opencode-provider-bridge.logLevel` to `debug` to enable.
 
 ### Full Stream Event Mapping
 
@@ -204,7 +255,7 @@ import { streamText, tool, jsonSchema } from 'ai';
 
 ### Schema Simplification
 
-`simplifySchema()` strips advanced JSON Schema features (`$ref`, `allOf`, `propertyNames`, `patternProperties`, etc.) that some providers reject. Keeps: `type`, `properties`, `items`, `required`, `description`, `enum`, `format`, `additionalProperties`, `anyOf`, `oneOf`, `allOf`, `$ref`, `not`, `title`, `examples`, `pattern`.
+`simplifySchema()` (in `providerUtils.ts`) strips advanced JSON Schema features that some providers reject. Keeps: `type`, `properties`, `items`, `required`, `description`, `enum`, `format`, `default`, `additionalProperties`, `anyOf`, `oneOf`, `allOf`, `$ref`, `not`, `title`, `examples`, `pattern`, `minimum`, `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`.
 
 ### Error Classification
 
@@ -223,9 +274,11 @@ import { streamText, tool, jsonSchema } from 'ai';
 |---|---|
 | `LanguageModelTextPart` | `{ role: 'user'/'assistant', content: string }` |
 | `LanguageModelToolCallPart` | `{ type: 'tool-call', toolCallId, toolName, input }` in assistant content array |
-| `LanguageModelToolResultPart` | `{ role: 'tool', content: [{ type: 'tool-result', ... }] }` |
+| `LanguageModelToolResultPart` | `{ role: 'tool', content: [{ type: 'tool-result', toolCallId, toolName, output }] }` |
 | `LanguageModelThinkingPart` | `{ type: 'reasoning', text }` in assistant content array |
-| `LanguageModelDataPart` (reasoning) | Accumulated into reasoning content string |
+| `LanguageModelDataPart` (reasoning MIME) | Accumulated into `reasoning` content string |
+| `LanguageModelChatMessageRole.System` | `{ role: 'system', content }` |
+| ToolResultPart name resolution | Looked up from `toolCallNameCache` by `callId`, warns on miss |
 
 ---
 
@@ -252,15 +305,14 @@ The implementation has been verified against VS Code's official BYOK providers (
 |---|---|
 | **Two-tier model cache** | Models returned instantly from `cachedModelsList`; background refresh fires `onDidChange` only if models changed |
 | **Tool schema cache** | `simplifySchema()` results cached by tool name via `toolSchemaCache` Map — re-used across requests |
+| **Tool name cache** | `toolCallNameCache` maps toolCallId → toolName for ToolResultPart resolution across turns |
 | **Local reasoning variable** | `currentReasoning` is a local `let` in `provideLanguageModelChatResponse`, not a class field — no cross-request state leaks |
 | **Reasoning-end dedup** | When `reasoning-end` already emitted `vscode_reasoning_done`, final reasoning flush uses `LanguageModelDataPart` instead of duplicating the UI close signal |
-| `LanguageModelThinkingPart` | `{ type: 'reasoning', text }` in assistant content array |
-| `LanguageModelDataPart` (reasoning MIME) | Accumulated into `reasoning` content |
-| `LanguageModelChatMessageRole.System` | `{ role: 'system', content }` (VS Code 1.119+ experimental) |
+| **Minimal text empty guard** | If stream produced no text, no tool calls, and no reasoning, emits a minimal `LanguageModelTextPart('')` to prevent Copilot "Unknown error" |
 
 ---
 
-## 6. Logger — `src/logger.ts`
+## 8. Logger — `src/logger.ts`
 
 Single `log(msg, level)` function with verbosity gating:
 
@@ -275,7 +327,7 @@ Setting: `"opencode-provider-bridge.logLevel"` in VS Code settings.
 
 ---
 
-## 7. Server Management
+## 9. Server Management
 
 The extension manages the opencode server lifecycle:
 
@@ -301,7 +353,7 @@ ensureOpencodeServer()
 
 ---
 
-## 8. Secret Storage & Key Management
+## 10. Secret Storage & Key Management
 
 ### Storage
 

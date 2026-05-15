@@ -2,15 +2,15 @@
   "name": "opencode-provider-bridge",
   "displayName": "Opencode Provider Bridge",
   "description": "Brings all OpenCode providers and models into VS Code Copilot's model picker",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "ankurmathur",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ankurmathur/opencode-provider-bridge"
+    "url": "https://github.com/ankurmay1988/opencode-provider-bridge"
   },
   "bugs": {
-    "url": "https://github.com/ankurmathur/opencode-provider-bridge/issues"
+    "url": "https://github.com/ankurmay1988/opencode-provider-bridge/issues"
   },
   "type": "module",
   "engines": {
@@ -111,6 +111,8 @@
     "package": "npm run clean && npm run check-types && npm run lint && node esbuild.js --production"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.77",
+    "@ai-sdk/google": "^3.0.73",
     "@ai-sdk/openai-compatible": "^2.0.47",
     "@opencode-ai/sdk": "^1.14.0",
     "ai": "^6.0.180"

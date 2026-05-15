@@ -2,117 +2,45 @@ import * as vscode from 'vscode';
 
 import type { ModelMessage, ToolSet } from 'ai';
 import { ModelsDevModel, ModelsDevProvider } from './opencodeConfig.js';
+import { extractTextFromToolResult, simplifySchema } from './providerUtils.js';
 import { jsonSchema, streamText, tool } from 'ai';
 
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
 
+const VERBOSE_FETCH = createVerboseFetch(globalThis.fetch);
+
 const REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
-
-const SAFE_SCHEMA_KEYS = new Set([
-  'type', 'properties', 'items', 'required', 'description',
-  'enum', 'format', 'default',
-  'minimum', 'maximum', 'minLength', 'maxLength',
-  'minItems', 'maxItems', 'additionalProperties',
-  'anyOf', 'oneOf', 'allOf', '$ref', 'not',
-  'title', 'examples', 'pattern',
-]);
-
-function simplifySchema(schema: unknown, label = ''): Record<string, unknown> {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-    return { type: 'object', properties: {} };
-  }
-  const rec = schema as Record<string, unknown>;
-  const rawKeys = Object.keys(rec);
-
-  // If the schema uses anyOf/oneOf/allOf, preserve them recursively
-  for (const combinator of ['anyOf', 'oneOf', 'allOf'] as const) {
-    if (rec[combinator] && Array.isArray(rec[combinator])) {
-      return {
-        [combinator]: (rec[combinator] as unknown[]).map((sub, i) =>
-          simplifySchema(sub, `${label}.${combinator}[${i}]`),
-        ),
-      };
-    }
-  }
-
-  if (rec.type === 'object' || rec.type === undefined) {
-    const out: Record<string, unknown> = { type: 'object' };
-    for (const key of Object.keys(rec)) {
-      if (!SAFE_SCHEMA_KEYS.has(key)) {continue;}
-      const val = rec[key];
-      if (key === 'properties' && val && typeof val === 'object' && !Array.isArray(val)) {
-        const cleaned: Record<string, unknown> = {};
-        for (const [propName, propSchema] of Object.entries(val as Record<string, unknown>)) {
-          cleaned[propName] = simplifySchema(propSchema, `${label}.${propName}`);
-        }
-        out.properties = cleaned;
-      } else if (key === 'items' && val && typeof val === 'object') {
-        out.items = simplifySchema(val, `${label}.items`);
-      } else {
-        out[key] = val;
-      }
-    }
-
-    const stripped = rawKeys.filter(k => !SAFE_SCHEMA_KEYS.has(k));
-    if (stripped.length > 0) {
-      log(`[opencode-provider-bridge] schema ${label || '<root>'}: stripped ${stripped.join(', ')}`, 'debug');
-    }
-    return out;
-  }
-
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(rec)) {
-    if (SAFE_SCHEMA_KEYS.has(key)) {
-      const val = rec[key];
-      if (key === 'items' && val && typeof val === 'object') {
-        out.items = simplifySchema(val, `${label}.items`);
-      } else {
-        out[key] = val;
-      }
-    }
-  }
-
-  const stripped = rawKeys.filter(k => !SAFE_SCHEMA_KEYS.has(k));
-  if (stripped.length > 0) {
-    log(`[opencode-provider-bridge] schema ${label || '<root>'}: stripped ${stripped.join(', ')}`, 'debug');
-  }
-  return out;
-}
-
-/**
- * Extract plain text from an AI SDK ToolResult for rendering in the chat UI.
- * ToolResult.content is typically an array of { type: 'text', text: '...' } parts.
- */
-function extractTextFromToolResult(result: unknown): string {
-  if (!result || typeof result !== 'object') {return '';}
-  const rec = result as Record<string, unknown>;
-  if (typeof rec.text === 'string') {return rec.text;}
-  if (Array.isArray(rec.content)) {
-    return rec.content
-      .map((part: unknown) => {
-        if (part && typeof part === 'object') {
-          const p = part as Record<string, unknown>;
-          if (p.type === 'text' && typeof p.text === 'string') {return p.text;}
-          if (p.type === 'text' && typeof p.value === 'string') {return p.value;}
-        }
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  return '';
-}
 
 export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
 
   lastUsage: { prompt: number; completion: number } | null = null;
-  private aiProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+
+  /** OpenAI-compatible provider instance (for models returning OpenAI SSE). */
+  private openaiProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+
+  /** Anthropic provider instance (for models returning Anthropic SSE, e.g. Qwen). */
+  private anthropicProvider: ReturnType<typeof createAnthropic> | null = null;
+
+  /** Google Generative AI provider instance (for Gemini models). */
+  private googleProvider: ReturnType<typeof createGoogleGenerativeAI> | null = null;
 
   /** Cache of simplified tool input schemas keyed by tool name. */
   private toolSchemaCache = new Map<string, Record<string, unknown>>();
+
+  /**
+   * Cross-turn cache mapping toolCallId → toolName.
+   * Populated when processing assistant tool-call parts so that when a
+   * subsequent tool-result part arrives (which lacks a name property in
+   * VS Code's LanguageModelToolResultPart), we can still report the
+   * correct tool name to the AI SDK.
+   */
+  private toolCallNameCache = new Map<string, string>();
 
   constructor(
     readonly providerInfo: ModelsDevProvider,
@@ -126,28 +54,111 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
   setApiKey(key: string): void {
     this.apiKey = key;
-    this.aiProvider = null;
+    this.openaiProvider = null;
+    this.anthropicProvider = null;
+    this.googleProvider = null;
   }
 
   fireChange(): void {
     this.onDidChangeEmitter.fire();
   }
 
-  private getProvider() {
-    if (this.aiProvider) {return this.aiProvider;}
-
+  /** Base URL for this provider's API. */
+  private getBaseUrl(): string {
     const knownApis: Record<string, string> = {
       opencode: 'https://opencode.ai/zen/v1',
       'opencode-go': 'https://opencode.ai/go/v1',
     };
-    const baseUrl = this.providerInfo.api || knownApis[this.providerInfo.id] || `https://api.${this.providerInfo.id}.com/v1`;
+    return this.providerInfo.api || knownApis[this.providerInfo.id] || `https://api.${this.providerInfo.id}.com/v1`;
+  }
 
-    this.aiProvider = createOpenAICompatible({
-      name: this.providerInfo.id,
-      baseURL: baseUrl.replace(/\/$/, ''),
-      apiKey: this.apiKey,
-    });
-    return this.aiProvider;
+  /**
+   * Returns the correct LanguageModelV3 for a given model, routing to
+   * the appropriate AI SDK based on the model's `apiNpm` metadata from
+   * the opencode provider registry.
+   *
+   * The opencode SDK returns per-model metadata that tells us exactly
+   * which AI SDK package to use (e.g. `@ai-sdk/openai-compatible`,
+   * `@ai-sdk/anthropic`, `@ai-sdk/google`). This is the authoritative
+   * source of truth:
+   *
+   *   @ai-sdk/openai-compatible  → sends OpenAI-format requests
+   *                                 to /v1/chat/completions
+   *   @ai-sdk/anthropic          → sends Anthropic-format requests
+   *                                 to /v1/messages
+   *   @ai-sdk/google             → sends Google Generative AI requests
+   *                                 to /v1/models/{model}
+   *
+   * The per-model apiUrl (if set) is used as the base URL for the
+   * provider (except for Google models, where the provider-level
+   * URL is used since the SDK constructs the model path internally).
+   * When it's not set (fallback tiers), `getBaseUrl()` is used instead.
+   */
+  private getLanguageModel(modelId: string) {
+    const modelMeta = this.enabledModels.get(modelId);
+    const apiUrl = modelMeta?.apiUrl ?? '';
+    const apiNpm = modelMeta?.apiNpm ?? '';
+
+    // ── Verbose routing diagnostics ────────────────────────────────
+    log(`[opencode-provider-bridge] ROUTE model="${modelId}" apiUrl="${apiUrl}" apiNpm="${apiNpm}" provider="${this.providerInfo.id}"`, 'debug');
+    log(`[opencode-provider-bridge] ROUTE modelMeta: ${JSON.stringify({
+      id: modelMeta?.id,
+      name: modelMeta?.name,
+      family: modelMeta?.family,
+      apiUrl: modelMeta?.apiUrl,
+      apiNpm: modelMeta?.apiNpm,
+      tool_call: modelMeta?.tool_call,
+      reasoning: modelMeta?.reasoning,
+      modalities: modelMeta?.modalities,
+      limits: modelMeta?.limit,
+    }, null, 2)}`, 'debug');
+
+    // Use per-model apiUrl if available, otherwise fall back to provider-level URL
+    const baseUrl = (apiUrl || this.getBaseUrl()).replace(/\/$/, '');
+
+    if (apiNpm === '@ai-sdk/google') {
+      // Google SDK constructs URLs like:
+      //   {baseURL}/models/{modelId}:streamGenerateContent?alt=sse
+      // The per-model apiUrl already includes the model-specific path
+      // (e.g. /zen/v1/models/gemini-3.1-pro), so we use the provider-level
+      // base URL and let the SDK append the model path.
+      const googleBaseUrl = this.getBaseUrl().replace(/\/$/, '');
+      log(`[opencode-provider-bridge] ROUTE → Google SDK (@ ${googleBaseUrl})`, 'debug');
+      if (!this.googleProvider) {
+        this.googleProvider = createGoogleGenerativeAI({
+          name: this.providerInfo.id,
+          baseURL: googleBaseUrl,
+          apiKey: this.apiKey,
+          fetch: VERBOSE_FETCH,
+        });
+      }
+      return this.googleProvider(modelId);
+    }
+
+    if (apiNpm === '@ai-sdk/anthropic' || apiUrl.includes('/messages')) {
+      log(`[opencode-provider-bridge] ROUTE → Anthropic SDK (@ ${baseUrl})`, 'debug');
+      if (!this.anthropicProvider) {
+        this.anthropicProvider = createAnthropic({
+          name: this.providerInfo.id,
+          baseURL: baseUrl,
+          authToken: this.apiKey,
+          fetch: VERBOSE_FETCH,
+        });
+      }
+      return this.anthropicProvider(modelId);
+    }
+
+    // Default: OpenAI-compatible (for @ai-sdk/openai-compatible or when apiNpm is unknown)
+    log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl})`, 'debug');
+    if (!this.openaiProvider) {
+      this.openaiProvider = createOpenAICompatible({
+        name: this.providerInfo.id,
+        baseURL: baseUrl,
+        apiKey: this.apiKey,
+        fetch: VERBOSE_FETCH,
+      });
+    }
+    return this.openaiProvider(modelId);
   }
 
   provideLanguageModelChatInformation(
@@ -157,6 +168,8 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     const models: vscode.LanguageModelChatInformation[] = [];
 
     for (const [modelId, modelMeta] of this.enabledModels) {
+      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.tool_call} reasoning=${modelMeta.reasoning} ctx=${modelMeta.limit?.context ?? '?'}`, 'debug');
+
       models.push({
         id: modelId,
         name: modelMeta.name || modelId,
@@ -171,6 +184,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       });
     }
 
+    log(`[opencode-provider-bridge] Registered ${models.length} models for provider "${this.providerInfo.name}"`, 'info');
     return models;
   }
 
@@ -186,6 +200,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
     const coreMessages = this.toModelMessages(messages);
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
+    log(`[opencode-provider-bridge] FULL MESSAGES:\n${JSON.stringify(coreMessages, null, 2)}`, 'debug');
 
     const tools: ToolSet = {};
     if (options.tools?.length) {
@@ -212,8 +227,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       ? 'required'
       : 'auto';
 
-    const provider = this.getProvider();
-    const languageModel = provider(model.id);
+    const languageModel = this.getLanguageModel(model.id);
 
     log(`[opencode-provider-bridge] Calling streamText model=${model.id} tools=${Object.keys(tools).length}`, 'info');
 
@@ -396,6 +410,8 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
           textParts.push(part.value);
         } else if (part instanceof vscode.LanguageModelToolCallPart) {
           log(`[opencode-provider-bridge] convert: ToolCall name=${part.name} id=${part.callId}`, 'debug');
+          // Cache the name so subsequent ToolResultPart conversions can look it up.
+          this.toolCallNameCache.set(part.callId, part.name);
           toolCallParts.push({
             toolCallId: part.callId,
             toolName: part.name,
@@ -404,7 +420,12 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         } else if (part instanceof vscode.LanguageModelToolResultPart) {
           log(`[opencode-provider-bridge] convert: ToolResult id=${part.callId}`, 'debug');
           toolCallId = part.callId;
-          toolResultName = (part as any).name ?? undefined;
+          // LanguageModelToolResultPart has no `.name` property in VS Code's
+          // API. Look up the tool name from the cache (populated when the
+          // preceding assistant message's tool-call was processed). Fall
+          // back to 'unknown' for debugging visibility.
+          toolResultName = this.toolCallNameCache.get(part.callId) ?? (part as any).name ?? undefined;
+          log(`[opencode-provider-bridge] convert: ToolResult id=${part.callId} resolvedName="${toolResultName ?? '(still undefined)'}"`, 'debug');
           const isStringContent = typeof (part as any).content === 'string';
           toolResultContent = isStringContent
             ? (part as any).content as string
@@ -429,13 +450,17 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
           result.push({ role: 'user', content: textParts.join('\n') });
         }
         if (toolCallId && toolResultContent !== undefined) {
+          const resolvedName = toolResultName ?? 'unknown';
+          if (resolvedName === 'unknown') {
+            log(`[opencode-provider-bridge] WARNING: toolName for callId=${toolCallId} is still 'unknown' — cache miss`, 'warn');
+          }
           result.push({
             role: 'tool',
             content: [
               {
                 type: 'tool-result',
                 toolCallId,
-                toolName: toolResultName ?? 'unknown',
+                toolName: resolvedName,
                 output: { type: 'text', value: toolResultContent },
               },
             ],
