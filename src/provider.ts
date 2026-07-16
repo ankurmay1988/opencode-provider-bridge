@@ -129,6 +129,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
           name: this.providerInfo.id,
           baseURL: googleBaseUrl,
           apiKey: this.apiKey,
+          headers: this.providerInfo.headers,
           fetch: VERBOSE_FETCH,
         });
       }
@@ -141,7 +142,8 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         this.anthropicProvider = createAnthropic({
           name: this.providerInfo.id,
           baseURL: baseUrl,
-          authToken: this.apiKey,
+          authToken: this.apiKey || 'no-key',
+          headers: this.providerInfo.headers,
           fetch: VERBOSE_FETCH,
         });
       }
@@ -155,6 +157,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         name: this.providerInfo.id,
         baseURL: baseUrl,
         apiKey: this.apiKey,
+        headers: this.providerInfo.headers,
         fetch: VERBOSE_FETCH,
       });
     }

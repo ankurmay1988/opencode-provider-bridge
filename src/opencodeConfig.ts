@@ -77,6 +77,7 @@ export interface ModelsDevProvider {
   api?: string;
   env?: string[];
   npm?: string;
+  headers?: Record<string, string>;
   models: Record<string, ModelsDevModel>;
 }
 
@@ -151,12 +152,14 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
 
   const baseURL = sp.options?.baseURL as string | undefined;
   const apiURL = sp.options?.api as string | undefined;
+  const headers = sp.options?.headers as Record<string, string> | undefined;
 
   return {
     provider: {
       id: sp.id,
       name: sp.name,
       api: baseURL ?? apiURL,
+      headers,
       env: sp.env,
       models: Object.fromEntries(models),
     },
