@@ -98,9 +98,13 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     const modelMeta = this.enabledModels.get(modelId);
     const apiUrl = modelMeta?.apiUrl ?? '';
     const apiNpm = modelMeta?.apiNpm ?? '';
+    const apiId = modelMeta?.apiId ?? modelId;
+
+    // Provider-level gateway URL takes priority; fall back to per-model apiUrl, then hardcoded defaults
+    const baseUrl = (this.providerInfo.api || apiUrl || this.getBaseUrl()).replace(/\/$/, '');
 
     // ── Verbose routing diagnostics ────────────────────────────────
-    log(`[opencode-provider-bridge] ROUTE model="${modelId}" apiUrl="${apiUrl}" apiNpm="${apiNpm}" provider="${this.providerInfo.id}"`, 'debug');
+    log(`[opencode-provider-bridge] ROUTE model="${modelId}" apiUrl="${apiUrl}" baseUrl="${baseUrl}" apiNpm="${apiNpm}" provider="${this.providerInfo.id}"`, 'debug');
     log(`[opencode-provider-bridge] ROUTE modelMeta: ${JSON.stringify({
       id: modelMeta?.id,
       name: modelMeta?.name,
@@ -112,9 +116,6 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       modalities: modelMeta?.modalities,
       limits: modelMeta?.limit,
     }, null, 2)}`, 'debug');
-
-    // Use per-model apiUrl if available, otherwise fall back to provider-level URL
-    const baseUrl = (apiUrl || this.getBaseUrl()).replace(/\/$/, '');
 
     if (apiNpm === '@ai-sdk/google') {
       // Google SDK constructs URLs like:
@@ -133,7 +134,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
           fetch: VERBOSE_FETCH,
         });
       }
-      return this.googleProvider(modelId);
+      return this.googleProvider(apiId);
     }
 
     if (apiNpm === '@ai-sdk/anthropic' || apiUrl.includes('/messages')) {
@@ -147,7 +148,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
           fetch: VERBOSE_FETCH,
         });
       }
-      return this.anthropicProvider(modelId);
+      return this.anthropicProvider(apiId);
     }
 
     // Default: OpenAI-compatible (for @ai-sdk/openai-compatible or when apiNpm is unknown)
@@ -161,7 +162,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         fetch: VERBOSE_FETCH,
       });
     }
-    return this.openaiProvider(modelId);
+    return this.openaiProvider(apiId);
   }
 
   provideLanguageModelChatInformation(
@@ -169,9 +170,10 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     _token: vscode.CancellationToken,
   ): vscode.ProviderResult<vscode.LanguageModelChatInformation[]> {
     const models: vscode.LanguageModelChatInformation[] = [];
+    const baseUrl = (this.providerInfo.api || this.getBaseUrl()).replace(/\/$/, '');
 
     for (const [modelId, modelMeta] of this.enabledModels) {
-      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.tool_call} reasoning=${modelMeta.reasoning} ctx=${modelMeta.limit?.context ?? '?'}`, 'debug');
+      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" baseUrl="${baseUrl}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.tool_call} reasoning=${modelMeta.reasoning} ctx=${modelMeta.limit?.context ?? '?'}`, 'debug');
 
       models.push({
         id: modelId,

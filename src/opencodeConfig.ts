@@ -64,6 +64,8 @@ export interface ModelsDevModel {
   apiUrl?: string;
   /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
   apiNpm?: string;
+  /** Model ID to send in the request body (SDK Model.api.id). May differ from the map key (e.g. workers-ai/@cf/... vs @cf/...). */
+  apiId?: string;
   tool_call?: boolean;
   reasoning?: boolean;
   attachment?: boolean;
@@ -125,6 +127,7 @@ function sdkModelToDevModel(model: Model): ModelsDevModel {
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
     apiNpm: model.api?.npm,            // exact npm package from opencode's registry
+    apiId: model.api?.id,              // model ID to send in requests (may differ from map key, e.g. workers-ai/@cf/...)
     tool_call: model.capabilities.toolcall,
     reasoning: model.capabilities.reasoning,
     attachment: model.capabilities.attachment,
