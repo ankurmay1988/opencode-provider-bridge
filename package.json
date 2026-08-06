@@ -106,6 +106,7 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "watch:esbuild": "node esbuild.js --watch",
     "watch": "npm run clean && npm-run-all -p watch:*",
+    "test": "rimraf .test-dist && npx --no-install tsc --outDir .test-dist --rootDir src && node --test .test-dist/*.test.js",
     "vscode:prepublish": "npm run package",
     "compile": "npm run clean && npm run check-types && npm run lint && node esbuild.js",
     "package": "npm run clean && npm run check-types && npm run lint && node esbuild.js --production"
