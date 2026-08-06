@@ -314,23 +314,18 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         }
       }
 
-      // Report final aggregated reasoning for multi-turn context.
-      // The real-time chunks above already rendered the thinking content;
-      // this provides the complete text as data for subsequent turns.
-      if (currentReasoning && !reasoningEnded) {
+      // VS Code persists completed thinking from this metadata. Streaming
+      // thinking deltas render in the UI but are not sufficient for history.
+      // Do not replace this marker with a DataPart: custom DataParts are not
+      // returned in later LanguageModelChatRequestMessage history.
+      if (currentReasoning) {
         report(new vscode.LanguageModelThinkingPart(
           '',
           undefined,
-          { _completeThinking: currentReasoning, vscode_reasoning_done: true },
-        ));
-      } else if (currentReasoning && reasoningEnded) {
-        // reasoning-end already emitted vscode_reasoning_done.
-        // Only emit _completeThinking as data to avoid double-triggering the UI.
-        report(new vscode.LanguageModelDataPart(
-          new TextEncoder().encode(JSON.stringify({
+          {
             _completeThinking: currentReasoning,
-          })),
-          REASONING_CONTENT_MIME,
+            ...(reasoningEnded ? {} : { vscode_reasoning_done: true }),
+          },
         ));
       }
 
