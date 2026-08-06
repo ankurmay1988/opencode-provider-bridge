@@ -1,4 +1,49 @@
+import type { ModelMessage } from 'ai';
+
 export const ZEN_REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
+
+/**
+ * DeepSeek thinking mode requires reasoning_content on every replayed
+ * assistant message, including VS Code's synthetic tool-call history.
+ * Provider metadata makes the OpenAI-compatible serializer emit the required
+ * empty field without altering messages that contain real reasoning.
+ */
+export function ensureZenReasoningContent(
+  messages: readonly ModelMessage[],
+  enabled: boolean,
+): ModelMessage[] {
+  if (!enabled) {
+    return [...messages];
+  }
+
+  return messages.map((message) => {
+    if (message.role !== 'assistant') {
+      return message;
+    }
+
+    const content = Array.isArray(message.content)
+      ? [...message.content]
+      : message.content
+        ? [{ type: 'text' as const, text: message.content }]
+        : [];
+
+    if (content.some((part) => part.type === 'reasoning')) {
+      return { ...message, content } as ModelMessage;
+    }
+
+    return {
+      ...message,
+      content,
+      providerOptions: {
+        ...message.providerOptions,
+        openaiCompatible: {
+          ...message.providerOptions?.openaiCompatible,
+          reasoning_content: '',
+        },
+      },
+    } as ModelMessage;
+  });
+}
 
 export type ThinkingPartWithMetadata = {
   metadata?: Record<string, unknown>;

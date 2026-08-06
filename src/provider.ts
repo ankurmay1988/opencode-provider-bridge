@@ -11,6 +11,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
 import {
+  ensureZenReasoningContent,
   extractZenReasoning,
   type ZenReasoningHistoryPart,
   withThinkingMetadata,
@@ -202,7 +203,12 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     let currentReasoning = '';
     let reasoningEnded = false;
 
-    const coreMessages = this.toModelMessages(messages);
+    const modelMeta = this.enabledModels.get(model.id);
+    const ensureReasoningField = this.providerInfo.id === 'opencode' && modelMeta?.reasoning === true;
+    const coreMessages = ensureZenReasoningContent(
+      this.toModelMessages(messages),
+      ensureReasoningField,
+    );
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
     log(`[opencode-provider-bridge] MESSAGE DIAGNOSTICS ${JSON.stringify(coreMessages.map((message) => {
       const content = Array.isArray(message.content) ? message.content : [];

@@ -4,6 +4,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText } from 'ai';
 
 import {
+  ensureZenReasoningContent,
   extractZenReasoning,
   withThinkingMetadata,
   ZEN_REASONING_CONTENT_MIME,
@@ -12,6 +13,7 @@ import {
 async function serializeZenAssistant(
   content: unknown,
   toolResult = false,
+  providerOptions?: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const requests: Array<{ messages: Array<Record<string, unknown>> }> = [];
   const fetch: typeof globalThis.fetch = async (_input, init) => {
@@ -38,7 +40,7 @@ async function serializeZenAssistant(
   await generateText({
     model: zen('zen-thinker'),
     messages: [
-      { role: 'assistant', content },
+      { role: 'assistant', content, providerOptions },
       ...(toolResult ? [{
         role: 'tool',
         content: [{
@@ -180,4 +182,48 @@ test('does not serialize empty reasoning_content for ordinary models', async () 
 
   assert.equal('reasoning_content' in assistant, false);
   assert.equal(assistant.content, 'ordinary answer');
+});
+
+test('adds empty reasoning_content to Zen assistant tool history', async () => {
+  const messages = ensureZenReasoningContent([{
+    role: 'assistant',
+    content: [{
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'read_file',
+      input: { path: 'README.md' },
+    }],
+  } as any], true);
+
+  const assistant = await serializeZenAssistant(
+    messages[0].content,
+    true,
+    messages[0].providerOptions,
+  );
+
+  assert.equal(assistant.reasoning_content, '');
+  assert.deepEqual(assistant.tool_calls, [{
+    id: 'call-1',
+    type: 'function',
+    function: { name: 'read_file', arguments: '{"path":"README.md"}' },
+  }]);
+});
+
+test('preserves real Zen reasoning and leaves other providers unchanged', async () => {
+  const original = [{
+    role: 'assistant',
+    content: [
+      { type: 'text', text: 'answer' },
+      { type: 'reasoning', text: 'real reasoning' },
+    ],
+  }] as any;
+
+  const zen = ensureZenReasoningContent(original, true);
+  const ordinary = ensureZenReasoningContent([{
+    role: 'assistant',
+    content: 'answer',
+  } as any], false);
+
+  assert.deepEqual(zen, original);
+  assert.equal(ordinary[0].content, 'answer');
 });
