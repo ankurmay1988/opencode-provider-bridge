@@ -13,6 +13,7 @@ import { log } from './logger.js';
 import {
   extractZenReasoning,
   type ZenReasoningHistoryPart,
+  withThinkingMetadata,
   ZEN_REASONING_CONTENT_MIME,
 } from './zenReasoning.js';
 
@@ -285,7 +286,12 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
             reasoningEnded = true;
             // Signal VS Code that reasoning is complete.
             // This closes the thinking animation in the chat response.
-            report(new vscode.LanguageModelThinkingPart('', undefined, { vscode_reasoning_done: true }));
+            {
+              report(withThinkingMetadata(
+                new vscode.LanguageModelThinkingPart(''),
+                { vscode_reasoning_done: true },
+              ));
+            }
             break;
 
           case 'tool-call':
@@ -333,9 +339,8 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       // returned in later LanguageModelChatRequestMessage history.
       if (currentReasoning) {
         log(`[opencode-provider-bridge] REASONING_OUT source=SSE length=${currentReasoning.length} ended=${reasoningEnded}`, 'debug');
-        report(new vscode.LanguageModelThinkingPart(
-          '',
-          undefined,
+        report(withThinkingMetadata(
+          new vscode.LanguageModelThinkingPart(''),
           {
             _completeThinking: currentReasoning,
             ...(reasoningEnded ? {} : { vscode_reasoning_done: true }),

@@ -5,6 +5,7 @@ import { generateText } from 'ai';
 
 import {
   extractZenReasoning,
+  withThinkingMetadata,
   ZEN_REASONING_CONTENT_MIME,
 } from './zenReasoning.js';
 
@@ -66,6 +67,24 @@ test('restores completed Zen reasoning from VS Code thinking history', () => {
   ]);
 
   assert.equal(restored, reasoning);
+});
+
+test('assigns complete reasoning metadata after constructing a thinking part', () => {
+  class RuntimeThinkingPart {
+    metadata?: Record<string, unknown>;
+
+    constructor(
+      readonly value: string,
+      _id?: string,
+      _ignoredMetadata?: Record<string, unknown>,
+    ) {}
+  }
+
+  const part = new RuntimeThinkingPart('', undefined, { _completeThinking: 'lost by runtime' });
+  assert.equal(part.metadata, undefined);
+
+  withThinkingMetadata(part, { _completeThinking: 'preserved reasoning' });
+  assert.deepEqual(part.metadata, { _completeThinking: 'preserved reasoning' });
 });
 
 test('uses completed reasoning once after streamed deltas', () => {

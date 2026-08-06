@@ -1,5 +1,21 @@
 export const ZEN_REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
 
+export type ThinkingPartWithMetadata = {
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * VS Code's runtime ignores a third LanguageModelThinkingPart constructor
+ * argument. Metadata must be assigned after the part is created.
+ */
+export function withThinkingMetadata<T extends ThinkingPartWithMetadata>(
+  part: T,
+  metadata: Record<string, unknown>,
+): T {
+  part.metadata = metadata;
+  return part;
+}
+
 export type ZenReasoningHistoryPart =
   | {
     kind: 'thinking';
