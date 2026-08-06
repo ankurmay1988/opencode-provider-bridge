@@ -1,3 +1,5 @@
+export const ZEN_REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
+
 export type ZenReasoningHistoryPart =
   | {
     kind: 'thinking';
@@ -11,24 +13,37 @@ export type ZenReasoningHistoryPart =
   };
 
 /**
- * Mirrors the reasoning history conversion currently used by the provider.
- *
- * The initial implementation deliberately reads only streamed thinking text.
- * VS Code persists completed thinking in metadata, which this implementation
- * does not yet restore.
+ * Restores Zen reasoning from VS Code assistant history without duplicating
+ * streaming deltas when VS Code has the completed-thinking marker.
  */
 export function extractZenReasoning(
   parts: readonly ZenReasoningHistoryPart[],
 ): string {
-  let reasoning = '';
+  let streamedReasoning = '';
+  let completedReasoning: string | undefined;
 
   for (const part of parts) {
     if (part.kind === 'thinking') {
-      reasoning += Array.isArray(part.value) ? part.value.join('') : part.value;
-    } else {
-      reasoning += new TextDecoder().decode(part.data);
+      const complete = part.metadata?._completeThinking;
+      if (typeof complete === 'string' && complete.length > 0) {
+        completedReasoning = complete;
+      } else {
+        streamedReasoning += Array.isArray(part.value) ? part.value.join('') : part.value;
+      }
+      continue;
+    }
+
+    if (part.mimeType !== ZEN_REASONING_CONTENT_MIME) {continue;}
+
+    try {
+      const complete = JSON.parse(new TextDecoder().decode(part.data))._completeThinking;
+      if (typeof complete === 'string' && complete.length > 0) {
+        completedReasoning = complete;
+      }
+    } catch {
+      // Ignore malformed legacy DataParts. They are not valid reasoning.
     }
   }
 
-  return reasoning;
+  return completedReasoning ?? streamedReasoning;
 }

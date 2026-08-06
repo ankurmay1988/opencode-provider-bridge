@@ -10,10 +10,13 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
+import {
+  extractZenReasoning,
+  type ZenReasoningHistoryPart,
+  ZEN_REASONING_CONTENT_MIME,
+} from './zenReasoning.js';
 
 const VERBOSE_FETCH = createVerboseFetch(globalThis.fetch);
-
-const REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
 
 export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
@@ -398,7 +401,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       let toolCallId: string | undefined;
       let toolResultContent: string | undefined;
       let toolResultName: string | undefined;
-      let reasoningContent = '';
+      const reasoningParts: ZenReasoningHistoryPart[] = [];
 
       for (const part of msg.content) {
         if (part instanceof vscode.LanguageModelTextPart) {
@@ -431,14 +434,21 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
                 .map((c) => c.value)
                 .join('\n');
         } else if (part instanceof vscode.LanguageModelDataPart) {
-          if (part.mimeType === REASONING_CONTENT_MIME) {
-            const decoded = new TextDecoder().decode(part.data);
-            reasoningContent += decoded;
-          }
+          reasoningParts.push({
+            kind: 'data',
+            mimeType: part.mimeType,
+            data: part.data,
+          });
         } else if (part instanceof vscode.LanguageModelThinkingPart) {
-          reasoningContent += part.value ?? '';
+          reasoningParts.push({
+            kind: 'thinking',
+            value: part.value ?? '',
+            metadata: part.metadata,
+          });
         }
       }
+
+      const reasoningContent = extractZenReasoning(reasoningParts);
 
       if (msg.role === vscode.LanguageModelChatMessageRole.User) {
         if (textParts.length > 0) {
