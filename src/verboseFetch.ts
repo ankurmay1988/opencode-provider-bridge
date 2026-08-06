@@ -9,6 +9,28 @@
 
 import { log } from './logger.js';
 
+function reasoningLengths(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(reasoningLengths);
+  }
+  if (!value || typeof value !== 'object') {return [];}
+
+  return Object.entries(value).flatMap(([key, nested]) => {
+    const ownLength = (key === 'reasoning_content' || key === 'reasoning') && typeof nested === 'string'
+      ? [nested.length]
+      : [];
+    return [...ownLength, ...reasoningLengths(nested)];
+  });
+}
+
+function summarizeJson(value: unknown): string {
+  const reasoning = reasoningLengths(value);
+  const type = value && typeof value === 'object' && 'type' in value
+    ? String((value as { type: unknown }).type)
+    : 'unknown';
+  return `type=${type} reasoning=${reasoning.length > 0} reasoningLengths=[${reasoning.join(',')}]`;
+}
+
 /**
  * Wraps a fetch function to log HTTP request URLs and raw SSE stream data
  * at debug log level.
@@ -25,8 +47,11 @@ export function createVerboseFetch(originalFetch: typeof globalThis.fetch): type
       const bodyStr = typeof init.body === 'string'
         ? init.body
         : '[non-string body]';
-      const truncated = bodyStr.length > 2000 ? bodyStr.slice(0, 2000) + '\n... [truncated]' : bodyStr;
-      log(`[opencode-provider-bridge] REQUEST BODY:\n${truncated}`, 'debug');
+      try {
+        log(`[opencode-provider-bridge] REQUEST BODY bytes=${bodyStr.length} ${summarizeJson(JSON.parse(bodyStr))}`, 'debug');
+      } catch {
+        log(`[opencode-provider-bridge] REQUEST BODY bytes=${bodyStr.length} non-json`, 'debug');
+      }
     }
 
     const response = await originalFetch(input, init);
@@ -67,7 +92,8 @@ export function createVerboseFetch(originalFetch: typeof globalThis.fetch): type
               .filter(l => l.startsWith('data: '))
               .map(l => {
                 const data = l.slice(6);
-                return data.length > 500 ? data.slice(0, 500) + '... [truncated]' : data;
+                if (data === '[DONE]') {return 'done';}
+                try {return summarizeJson(JSON.parse(data));} catch {return `non-json bytes=${data.length}`;}
               });
             for (const data of dataLines) {
               log(`[opencode-provider-bridge] SSE #${eventCount}: ${data}`, 'debug');

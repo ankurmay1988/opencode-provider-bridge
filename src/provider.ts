@@ -203,7 +203,17 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
     const coreMessages = this.toModelMessages(messages);
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
-    log(`[opencode-provider-bridge] FULL MESSAGES:\n${JSON.stringify(coreMessages, null, 2)}`, 'debug');
+    log(`[opencode-provider-bridge] MESSAGE DIAGNOSTICS ${JSON.stringify(coreMessages.map((message) => {
+      const content = Array.isArray(message.content) ? message.content : [];
+      const reasoning = content.filter((part: any) => part.type === 'reasoning');
+      return {
+        role: message.role,
+        parts: Array.isArray(message.content) ? content.length : 1,
+        reasoning: reasoning.length > 0,
+        reasoningLength: reasoning.reduce((length: number, part: any) => length + part.text.length, 0),
+        toolCalls: content.filter((part: any) => part.type === 'tool-call').length,
+      };
+    }))}`, 'debug');
 
     const tools: ToolSet = {};
     if (options.tools?.length) {
@@ -322,6 +332,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       // Do not replace this marker with a DataPart: custom DataParts are not
       // returned in later LanguageModelChatRequestMessage history.
       if (currentReasoning) {
+        log(`[opencode-provider-bridge] REASONING_OUT source=SSE length=${currentReasoning.length} ended=${reasoningEnded}`, 'debug');
         report(new vscode.LanguageModelThinkingPart(
           '',
           undefined,
@@ -449,6 +460,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       }
 
       const reasoningContent = extractZenReasoning(reasoningParts);
+      if (reasoningParts.length > 0) {
+        log(`[opencode-provider-bridge] REASONING_HISTORY role=${msg.role} parts=${reasoningParts.length} restored=${reasoningContent.length > 0} length=${reasoningContent.length}`, 'debug');
+      }
 
       if (msg.role === vscode.LanguageModelChatMessageRole.User) {
         if (textParts.length > 0) {
