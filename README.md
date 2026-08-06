@@ -21,20 +21,7 @@ That's it. Providers are auto-discovered from a running `opencode serve` or your
 - **Real-time reasoning** — thinking content streams as it's generated
 - **Token usage** — status bar shows prompt/completion tokens per response
 - **Tool calling** — full support for tools with schema simplification and cross-turn name resolution
-- **Safe debug logging** — set `logLevel` to `debug` for routing and reasoning-presence diagnostics without request text, reasoning text, or API keys
-
-## Zen reasoning history
-
-OpenCode Zen thinking models require each prior assistant response's original
-`reasoning_content` on the next request. The bridge preserves completed
-reasoning in VS Code's `LanguageModelThinkingPart.metadata._completeThinking`,
-restores it when converting history, and passes it to AI SDK as a `reasoning`
-part. `@ai-sdk/openai-compatible` serializes that part as
-`assistant.reasoning_content`.
-
-Reasoning is never replaced with response text or an empty placeholder. Custom
-`LanguageModelDataPart` values are not reliable history storage because Copilot
-Chat strips them from later requests.
+- **Debug logging** — set `logLevel` to `debug` to see raw SSE stream data, routing decisions, and request payloads
 
 ## Requirements
 
