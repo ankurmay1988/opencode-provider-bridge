@@ -64,6 +64,8 @@ export interface ModelsDevModel {
   apiUrl?: string;
   /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
   apiNpm?: string;
+  /** Model ID to send in the request body (SDK Model.api.id). May differ from the map key (e.g. workers-ai/@cf/... vs @cf/...). */
+  apiId?: string;
   tool_call?: boolean;
   reasoning?: boolean;
   attachment?: boolean;
@@ -77,6 +79,7 @@ export interface ModelsDevProvider {
   api?: string;
   env?: string[];
   npm?: string;
+  headers?: Record<string, string>;
   models: Record<string, ModelsDevModel>;
 }
 
@@ -124,6 +127,7 @@ function sdkModelToDevModel(model: Model): ModelsDevModel {
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
     apiNpm: model.api?.npm,            // exact npm package from opencode's registry
+    apiId: model.api?.id,              // model ID to send in requests (may differ from map key, e.g. workers-ai/@cf/...)
     tool_call: model.capabilities.toolcall,
     reasoning: model.capabilities.reasoning,
     attachment: model.capabilities.attachment,
@@ -151,12 +155,14 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
 
   const baseURL = sp.options?.baseURL as string | undefined;
   const apiURL = sp.options?.api as string | undefined;
+  const headers = sp.options?.headers as Record<string, string> | undefined;
 
   return {
     provider: {
       id: sp.id,
       name: sp.name,
       api: baseURL ?? apiURL,
+      headers,
       env: sp.env,
       models: Object.fromEntries(models),
     },

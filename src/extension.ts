@@ -441,8 +441,9 @@ class BridgeProvider implements vscode.LanguageModelChatProvider {
       throw vscode.LanguageModelError.NotFound(`OpenCode provider "${providerId}" not found`);
     }
 
-    // Prompt for API key if missing
-    if (!provider.hasApiKey) {
+    // Prompt for API key if missing — skip if provider authenticates via custom headers
+    const hasHeaderAuth = !!provider.providerInfo.headers && Object.keys(provider.providerInfo.headers).length > 0;
+    if (!provider.hasApiKey && !hasHeaderAuth) {
       const key = await this.promptForKey(providerId, provider.providerInfo.name);
       if (!key) {
         throw new vscode.LanguageModelError(
