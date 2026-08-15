@@ -1,5 +1,7 @@
 .vscode/**
 .vscode-test/**
+.codegraph/**
+.test-dist/**
 out/**
 node_modules/**
 src/**

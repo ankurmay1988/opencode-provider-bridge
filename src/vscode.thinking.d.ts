@@ -11,10 +11,10 @@
  */
 declare module 'vscode' {
   export class LanguageModelThinkingPart {
-    constructor(value: string | string[], id?: string, metadata?: Record<string, unknown>);
+    constructor(value: string | string[], id?: string);
     readonly value: string | string[];
     readonly id?: string;
-    readonly metadata?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
   }
 
   export type LanguageModelResponsePart2 = LanguageModelResponsePart | LanguageModelThinkingPart;

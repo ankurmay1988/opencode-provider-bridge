@@ -390,6 +390,26 @@ This section documents how VS Code's Copilot Chat extension processes the chunks
 | `LanguageModelDataPart` with other mime | Stripped from conversation history by Copilot Chat |
 | `LanguageModelThinkingPart` | Forwarded as `thinking` object. Rendered in Chat UI with collapse/expand |
 
+### Zen reasoning round trip
+
+OpenCode Zen thinking models return `reasoning_content` through the
+OpenAI-compatible SSE stream. AI SDK exposes it as `reasoning-delta`; the
+bridge streams those deltas to the UI, then emits one terminal
+`LanguageModelThinkingPart` with `metadata._completeThinking`. That metadata is
+the history-safe completed value; custom `LanguageModelDataPart` values are
+stripped before the next provider request.
+
+On a subsequent turn, `toModelMessages()` prefers `_completeThinking` over
+streamed deltas to prevent duplication. It converts the restored value to an AI
+SDK assistant `{ type: 'reasoning', text }` part. In the pinned
+`@ai-sdk/openai-compatible` v2.0.47, that part becomes
+`assistant.reasoning_content` in the `/chat/completions` request. This is the
+provider-specific value Zen requires; no empty fallback is emitted.
+
+Debug logs report only reasoning presence and length at SSE, history, model
+message, and HTTP serialization boundaries. They never include reasoning text,
+request text, or API keys.
+
 ### Response shapes returned to Copilot Chat
 
 - **Success** — `{ type: 'success', text, usage, resolvedModel }` — requires text or tool calls
