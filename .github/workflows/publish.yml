@@ -1,0 +1,93 @@
+name: Publish Extension
+
+# Automatically publishes the extension to the Visual Studio Marketplace
+# (and optionally Open VSX) whenever the version in package.json is bumped
+# on the master branch.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - package.json
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-extension
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for version bump
+        id: version-check
+        shell: bash
+        run: |
+          CURR_VERSION=$(node -p "require('./package.json').version")
+          PREV_VERSION=""
+          if git show HEAD^:package.json > /tmp/prev-package.json 2>/dev/null; then
+            PREV_VERSION=$(node -p "require('/tmp/prev-package.json').version")
+          fi
+          echo "Current version:  $CURR_VERSION"
+          echo "Previous version: $PREV_VERSION"
+          if [ "$CURR_VERSION" != "$PREV_VERSION" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$CURR_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        if: steps.version-check.outputs.bumped == 'true'
+        run: npm test
+
+      - name: Package extension (.vsix)
+        if: steps.version-check.outputs.bumped == 'true'
+        run: npx vsce package
+
+      - name: Publish to Visual Studio Marketplace
+        if: steps.version-check.outputs.bumped == 'true'
+        run: npx vsce publish --packagePath *.vsix -p ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX Registry
+        if: steps.version-check.outputs.bumped == 'true' && secrets.OVSX_PAT != ''
+        run: npx ovsx publish *.vsix -p ${{ secrets.OVSX_PAT }}
+        continue-on-error: true
+
+      - name: Tag release
+        if: steps.version-check.outputs.bumped == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG="v${{ steps.version-check.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        if: steps.version-check.outputs.bumped == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version-check.outputs.version }}"
+          name: "v${{ steps.version-check.outputs.version }}"
+          generate_release_notes: true
+          files: "*.vsix"
