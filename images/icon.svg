@@ -1,28 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#17152f"/>
-      <stop offset="1" stop-color="#30206b"/>
-    </linearGradient>
-    <linearGradient id="bridge" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#77e4ff"/>
-      <stop offset="1" stop-color="#9d7bff"/>
-    </linearGradient>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="2.5" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>
-  <rect width="128" height="128" rx="24" fill="url(#background)"/>
-  <g transform="translate(10 12) scale(.32)">
+  <rect width="128" height="128" rx="20" fill="#4B4646"/>
+  <g transform="translate(8 14) scale(.29)">
     <path d="M180 240H60V120H180V240Z" fill="#4B4646"/>
     <path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="#F1ECEC" fill-rule="evenodd"/>
   </g>
-  <path d="M45 88V78C49 57 65 45 83 45C97 45 107 55 111 70V88" fill="none" stroke="url(#bridge)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
-  <path d="M43 88H113" stroke="#F1ECEC" stroke-width="7" stroke-linecap="round"/>
-  <circle cx="83" cy="45" r="7" fill="#ffffff"/>
-  <circle cx="111" cy="71" r="8" fill="#9d7bff"/>
+  <path d="M58 79C66 52 86 39 103 47C110 50 114 58 115 68" fill="none" stroke="#77E4FF" stroke-width="4" stroke-linecap="square"/>
+  <path d="M58 79H115M110 50V91" fill="none" stroke="#F1ECEC" stroke-width="7" stroke-linecap="square"/>
+  <path d="M47 91H119" stroke="#F1ECEC" stroke-width="7" stroke-linecap="square"/>
+  <circle cx="58" cy="79" r="5" fill="#77E4FF"/>
+  <circle cx="115" cy="68" r="6" fill="#9D7BFF"/>
 </svg>
