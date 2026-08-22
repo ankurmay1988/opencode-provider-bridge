@@ -26,14 +26,14 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
   lastUsage: { prompt: number; completion: number } | null = null;
 
-  /** OpenAI-compatible provider instance (for models returning OpenAI SSE). */
-  private openaiProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+  /** OpenAI-compatible provider instances cached by base URL. */
+  private openaiProviders = new Map<string, ReturnType<typeof createOpenAICompatible>>();
 
-  /** Anthropic provider instance (for models returning Anthropic SSE, e.g. Qwen). */
-  private anthropicProvider: ReturnType<typeof createAnthropic> | null = null;
+  /** Anthropic provider instances cached by base URL. */
+  private anthropicProviders = new Map<string, ReturnType<typeof createAnthropic>>();
 
-  /** Google Generative AI provider instance (for Gemini models). */
-  private googleProvider: ReturnType<typeof createGoogleGenerativeAI> | null = null;
+  /** Google Generative AI provider instances cached by base URL. */
+  private googleProviders = new Map<string, ReturnType<typeof createGoogleGenerativeAI>>();
 
   /** Cache of simplified tool input schemas keyed by tool name. */
   private toolSchemaCache = new Map<string, Record<string, unknown>>();
@@ -59,9 +59,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
 
   setApiKey(key: string): void {
     this.apiKey = key;
-    this.openaiProvider = null;
-    this.anthropicProvider = null;
-    this.googleProvider = null;
+    this.openaiProviders.clear();
+    this.anthropicProviders.clear();
+    this.googleProviders.clear();
   }
 
   fireChange(): void {
@@ -75,6 +75,29 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       'opencode-go': 'https://opencode.ai/go/v1',
     };
     return this.providerInfo.api || knownApis[this.providerInfo.id] || `https://api.${this.providerInfo.id}.com/v1`;
+  }
+
+  private getModelMeta(modelId: string): ModelsDevModel | undefined {
+    return (
+      this.enabledModels.get(modelId) ??
+      this.enabledModels.get(`${this.providerInfo.id}/${modelId}`) ??
+      (modelId.startsWith(`${this.providerInfo.id}/`)
+        ? this.enabledModels.get(modelId.slice(this.providerInfo.id.length + 1))
+        : undefined)
+    );
+  }
+
+  private shouldUseQualifiedModelId(): boolean {
+    const baseUrl = this.providerInfo.api?.replace(/\/$/, '');
+    if (!baseUrl) {return false;}
+
+    const standardProviderUrls: Record<string, string[]> = {
+      openai: ['https://api.openai.com/v1'],
+      anthropic: ['https://api.anthropic.com/v1'],
+      google: ['https://generativelanguage.googleapis.com/v1beta'],
+      vertex_ai: ['https://generativelanguage.googleapis.com/v1beta'],
+    };
+    return !standardProviderUrls[this.providerInfo.id]?.includes(baseUrl);
   }
 
   /**
@@ -100,9 +123,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
    * When it's not set (fallback tiers), `getBaseUrl()` is used instead.
    */
   private getLanguageModel(modelId: string) {
-    const modelMeta = this.enabledModels.get(modelId);
+    const modelMeta = this.getModelMeta(modelId);
     const apiUrl = modelMeta?.apiUrl ?? '';
-    const apiNpm = modelMeta?.apiNpm ?? '';
+    const apiNpm = modelMeta?.apiNpm || this.providerInfo.npm || '';
 
     // ── Verbose routing diagnostics ────────────────────────────────
     log(`[opencode-provider-bridge] ROUTE model="${modelId}" apiUrl="${apiUrl}" apiNpm="${apiNpm}" provider="${this.providerInfo.id}"`, 'debug');
@@ -121,6 +144,10 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     // Use per-model apiUrl if available, otherwise fall back to provider-level URL
     const baseUrl = (apiUrl || this.getBaseUrl()).replace(/\/$/, '');
 
+    const targetModelId = this.shouldUseQualifiedModelId()
+      ? modelMeta?.apiModelId || modelMeta?.id || modelId
+      : modelMeta?.id || modelId;
+
     if (apiNpm === '@ai-sdk/google') {
       // Google SDK constructs URLs like:
       //   {baseURL}/models/{modelId}:streamGenerateContent?alt=sse
@@ -129,41 +156,49 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       // base URL and let the SDK append the model path.
       const googleBaseUrl = this.getBaseUrl().replace(/\/$/, '');
       log(`[opencode-provider-bridge] ROUTE → Google SDK (@ ${googleBaseUrl})`, 'debug');
-      if (!this.googleProvider) {
-        this.googleProvider = createGoogleGenerativeAI({
+      let provider = this.googleProviders.get(googleBaseUrl);
+      if (!provider) {
+        provider = createGoogleGenerativeAI({
           name: this.providerInfo.id,
           baseURL: googleBaseUrl,
           apiKey: this.apiKey,
           fetch: VERBOSE_FETCH,
         });
+        this.googleProviders.set(googleBaseUrl, provider);
       }
-      return this.googleProvider(modelId);
+      const strippedModelId = targetModelId.replace(/^(google|vertex_ai)\//, '');
+      return provider(strippedModelId);
     }
 
     if (apiNpm === '@ai-sdk/anthropic' || apiUrl.includes('/messages')) {
       log(`[opencode-provider-bridge] ROUTE → Anthropic SDK (@ ${baseUrl})`, 'debug');
-      if (!this.anthropicProvider) {
-        this.anthropicProvider = createAnthropic({
+      let provider = this.anthropicProviders.get(baseUrl);
+      if (!provider) {
+        provider = createAnthropic({
           name: this.providerInfo.id,
           baseURL: baseUrl,
           authToken: this.apiKey,
           fetch: VERBOSE_FETCH,
         });
+        this.anthropicProviders.set(baseUrl, provider);
       }
-      return this.anthropicProvider(modelId);
+      const strippedModelId = targetModelId.replace(/^anthropic\//, '');
+      return provider(strippedModelId);
     }
 
-    // Default: OpenAI-compatible (for @ai-sdk/openai-compatible or when apiNpm is unknown)
-    log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl})`, 'debug');
-    if (!this.openaiProvider) {
-      this.openaiProvider = createOpenAICompatible({
+    // Default: OpenAI-compatible (for @ai-sdk/openai-compatible, @ai-sdk/openai, or when apiNpm is unknown)
+    log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl}) model="${targetModelId}"`, 'debug');
+    let provider = this.openaiProviders.get(baseUrl);
+    if (!provider) {
+      provider = createOpenAICompatible({
         name: this.providerInfo.id,
         baseURL: baseUrl,
         apiKey: this.apiKey,
         fetch: VERBOSE_FETCH,
       });
+      this.openaiProviders.set(baseUrl, provider);
     }
-    return this.openaiProvider(modelId);
+    return provider(targetModelId);
   }
 
   provideLanguageModelChatInformation(
@@ -203,7 +238,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     let currentReasoning = '';
     let reasoningEnded = false;
 
-    const modelMeta = this.enabledModels.get(model.id);
+    const modelMeta = this.getModelMeta(model.id);
     const ensureReasoningField = this.providerInfo.id === 'opencode' && modelMeta?.reasoning === true;
     const coreMessages = ensureZenReasoningContent(
       this.toModelMessages(messages),
