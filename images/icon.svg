@@ -16,13 +16,13 @@
       </feMerge>
     </filter>
   </defs>
-  <rect width="128" height="128" rx="26" fill="url(#background)"/>
-  <g transform="translate(14 34) scale(1.7)" fill="#f5f3ff">
-    <path d="M18 30H6V18H18V30Z"/>
-    <path d="M18 12H6V30H18V12ZM24 36H0V6H24V36Z" fill-rule="evenodd"/>
+  <rect width="128" height="128" rx="24" fill="url(#background)"/>
+  <g transform="translate(10 12) scale(.32)">
+    <path d="M180 240H60V120H180V240Z" fill="#4B4646"/>
+    <path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="#F1ECEC" fill-rule="evenodd"/>
   </g>
-  <path d="M49 88V77C52 57 65 45 82 45C96 45 106 54 109 68V88" fill="none" stroke="url(#bridge)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
-  <path d="M47 88H111" stroke="#f5f3ff" stroke-width="7" stroke-linecap="round"/>
-  <circle cx="82" cy="45" r="7" fill="#ffffff"/>
-  <circle cx="109" cy="70" r="8" fill="#9d7bff"/>
+  <path d="M45 88V78C49 57 65 45 83 45C97 45 107 55 111 70V88" fill="none" stroke="url(#bridge)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M43 88H113" stroke="#F1ECEC" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="83" cy="45" r="7" fill="#ffffff"/>
+  <circle cx="111" cy="71" r="8" fill="#9d7bff"/>
 </svg>
