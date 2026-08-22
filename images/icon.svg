@@ -9,7 +9,7 @@
       <stop offset="1" stop-color="#9d7bff"/>
     </linearGradient>
     <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
@@ -17,10 +17,12 @@
     </filter>
   </defs>
   <rect width="128" height="128" rx="26" fill="url(#background)"/>
-  <path d="M27 88V48M101 88V48" stroke="#f5f3ff" stroke-width="9" stroke-linecap="round"/>
-  <path d="M27 69C42 36 86 36 101 69" fill="none" stroke="url(#bridge)" stroke-width="9" stroke-linecap="round" filter="url(#glow)"/>
-  <path d="M27 88H101" stroke="#f5f3ff" stroke-width="7" stroke-linecap="round" opacity=".9"/>
-  <circle cx="27" cy="43" r="10" fill="#77e4ff"/>
-  <circle cx="101" cy="43" r="10" fill="#9d7bff"/>
-  <circle cx="64" cy="48" r="7" fill="#ffffff"/>
+  <g transform="translate(14 34) scale(1.7)" fill="#f5f3ff">
+    <path d="M18 30H6V18H18V30Z"/>
+    <path d="M18 12H6V30H18V12ZM24 36H0V6H24V36Z" fill-rule="evenodd"/>
+  </g>
+  <path d="M49 88V77C52 57 65 45 82 45C96 45 106 54 109 68V88" fill="none" stroke="url(#bridge)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M47 88H111" stroke="#f5f3ff" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="82" cy="45" r="7" fill="#ffffff"/>
+  <circle cx="109" cy="70" r="8" fill="#9d7bff"/>
 </svg>
