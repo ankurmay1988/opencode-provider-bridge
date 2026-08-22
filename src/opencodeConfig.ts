@@ -61,6 +61,8 @@ export interface ModelsDevModel {
   apiUrl?: string;
   /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
   apiNpm?: string;
+  /** Model identifier to use when the configured endpoint requires provider/model. */
+  apiModelId?: string;
   tool_call?: boolean;
   reasoning?: boolean;
   attachment?: boolean;
@@ -156,11 +158,12 @@ export function readOpencodeConfig(): Record<string, unknown> | null {
 
 export function sdkModelToDevModel(model: Model): ModelsDevModel {
   return {
-    id: model.api?.id || model.id,
+    id: model.id,
     name: model.name,
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
     apiNpm: model.api?.npm,            // exact npm package from opencode's registry
+    apiModelId: model.api?.id,
     tool_call: model.capabilities?.toolcall ?? (model as any).tool_call,
     reasoning: model.capabilities?.reasoning ?? (model as any).reasoning,
     attachment: model.capabilities?.attachment ?? (model as any).attachment,
@@ -345,6 +348,7 @@ export function configProvidersFromConfigFile(config: Record<string, unknown> | 
             family: providerId,
             apiUrl: rawModel.apiUrl ?? rawModel.api?.url,
             apiNpm: rawModel.apiNpm ?? rawModel.api?.npm ?? npm,
+            apiModelId: rawModel.apiModelId ?? rawModel.api?.id ?? (rawModel.id ? id : undefined),
             tool_call: toolCall,
             reasoning,
             attachment,

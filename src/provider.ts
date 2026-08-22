@@ -87,6 +87,19 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     );
   }
 
+  private shouldUseQualifiedModelId(): boolean {
+    const baseUrl = this.providerInfo.api?.replace(/\/$/, '');
+    if (!baseUrl) {return false;}
+
+    const standardProviderUrls: Record<string, string[]> = {
+      openai: ['https://api.openai.com/v1'],
+      anthropic: ['https://api.anthropic.com/v1'],
+      google: ['https://generativelanguage.googleapis.com/v1beta'],
+      vertex_ai: ['https://generativelanguage.googleapis.com/v1beta'],
+    };
+    return !standardProviderUrls[this.providerInfo.id]?.includes(baseUrl);
+  }
+
   /**
    * Returns the correct LanguageModelV3 for a given model, routing to
    * the appropriate AI SDK based on the model's `apiNpm` metadata from
@@ -131,10 +144,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     // Use per-model apiUrl if available, otherwise fall back to provider-level URL
     const baseUrl = (apiUrl || this.getBaseUrl()).replace(/\/$/, '');
 
-    // The target model ID to send to the provider SDK:
-    // Prefer modelMeta.id (the exact model identifier from OpenCode's registry / opencode.json)
-    // falling back to modelId.
-    const targetModelId = modelMeta?.id || modelId;
+    const targetModelId = this.shouldUseQualifiedModelId()
+      ? modelMeta?.apiModelId || modelMeta?.id || modelId
+      : modelMeta?.id || modelId;
 
     if (apiNpm === '@ai-sdk/google') {
       // Google SDK constructs URLs like:
