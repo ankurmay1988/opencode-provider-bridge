@@ -131,6 +131,11 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     // Use per-model apiUrl if available, otherwise fall back to provider-level URL
     const baseUrl = (apiUrl || this.getBaseUrl()).replace(/\/$/, '');
 
+    // The target model ID to send to the provider SDK:
+    // Prefer modelMeta.id (the exact model identifier from OpenCode's registry / opencode.json)
+    // falling back to modelId.
+    const targetModelId = modelMeta?.id || modelId;
+
     if (apiNpm === '@ai-sdk/google') {
       // Google SDK constructs URLs like:
       //   {baseURL}/models/{modelId}:streamGenerateContent?alt=sse
@@ -149,7 +154,8 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         });
         this.googleProviders.set(googleBaseUrl, provider);
       }
-      return provider(modelId);
+      const strippedModelId = targetModelId.replace(/^(google|vertex_ai)\//, '');
+      return provider(strippedModelId);
     }
 
     if (apiNpm === '@ai-sdk/anthropic' || apiUrl.includes('/messages')) {
@@ -164,11 +170,12 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         });
         this.anthropicProviders.set(baseUrl, provider);
       }
-      return provider(modelId);
+      const strippedModelId = targetModelId.replace(/^anthropic\//, '');
+      return provider(strippedModelId);
     }
 
     // Default: OpenAI-compatible (for @ai-sdk/openai-compatible, @ai-sdk/openai, or when apiNpm is unknown)
-    log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl})`, 'debug');
+    log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl}) model="${targetModelId}"`, 'debug');
     let provider = this.openaiProviders.get(baseUrl);
     if (!provider) {
       provider = createOpenAICompatible({
@@ -179,7 +186,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       });
       this.openaiProviders.set(baseUrl, provider);
     }
-    return provider(modelId);
+    return provider(targetModelId);
   }
 
   provideLanguageModelChatInformation(

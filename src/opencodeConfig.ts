@@ -156,7 +156,7 @@ export function readOpencodeConfig(): Record<string, unknown> | null {
 
 export function sdkModelToDevModel(model: Model): ModelsDevModel {
   return {
-    id: model.id,
+    id: model.api?.id || model.id,
     name: model.name,
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
