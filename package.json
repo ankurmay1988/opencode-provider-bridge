@@ -5,6 +5,7 @@
   "version": "0.6.1",
   "publisher": "ankurmathur",
   "license": "MIT",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ankurmay1988/opencode-provider-bridge"
