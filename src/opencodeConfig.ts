@@ -10,25 +10,18 @@
 //     capabilities (toolcall, vision, reasoning), context limits, etc.
 //     Requires: opencode CLI/desktop running on :4096.
 //
-//   TIER 2 — models.dev + auth.json (fallback)
-//     Fetches https://models.dev/api.json (public provider/model catalog)
-//     and intersects it with the user's auth.json credentials.
-//     Returns model names + capabilities from the catalog for any
-//     provider the user has credentials for (nvidia, vultr, etc.).
-//     Requires: internet access for the catalog fetch.
+//   TIER 2 — opencode.json / models.dev + auth.json (fallback)
+//     Reads local opencode.json / opencode.jsonc configurations and/or
+//     fetches https://models.dev/api.json (public provider/model catalog)
+//     intersected with credentials from auth.json.
+//     Returns model names + capabilities from config/catalog for any
+//     configured provider.
 //
 //   TIER 3 — auth.json only (bare fallback)
 //     Creates a single placeholder model per provider with no metadata.
 //     The provider shows up in VS Code's picker but the user won't
 //     see model names, context limits, or capabilities.
 //     Requires: nothing — works fully offline.
-//
-// WHY NOT JUST models.dev?
-//   models.dev alone gives model metadata but no API keys (those are
-//   in auth.json). models.dev + auth.json together work as well as
-//   the SDK — we just lose live config (custom baseURLs, overrides).
-//   We removed models.dev earlier but added it back because without
-//   it Tier 3 shows only "default" model names — useless to the user.
 // =============================================================================
 
 import * as fs from 'fs';
@@ -38,7 +31,11 @@ import * as path from 'path';
 import type { Model, Provider } from '@opencode-ai/sdk';
 
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { log as logger } from './logger.js';
+
+type LogFn = (msg: string) => void;
+let logFn: LogFn = () => {};
+export function setConfigLogger(fn: LogFn) { logFn = fn; }
+function logger(msg: string) { logFn(msg); }
 
 const PKG_NAME = 'opencode-provider-bridge';
 
@@ -97,6 +94,18 @@ export type ProviderEntry = {
 const DEFAULT_SDK_PORT = 4096;
 const MODELS_DEV_URL = 'https://models.dev/api.json';
 
+const CONFIG_FILE_PATHS = [
+  path.join(os.homedir(), '.config', 'opencode', 'opencode.json'),
+  path.join(os.homedir(), '.config', 'opencode', 'opencode.jsonc'),
+  path.join(os.homedir(), '.opencode', 'opencode.json'),
+  path.join(os.homedir(), '.opencode', 'opencode.jsonc'),
+  path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.json'),
+  path.join(process.cwd(), 'opencode.json'),
+  path.join(process.cwd(), 'opencode.jsonc'),
+  path.join(process.cwd(), '.opencode', 'opencode.json'),
+  path.join(process.cwd(), '.opencode', 'opencode.jsonc'),
+];
+
 const AUTH_FILE_PATHS = [
   path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
   path.join(os.homedir(), '.opencode', 'auth.json'),
@@ -114,55 +123,86 @@ const KNOWN_PROVIDERS: Record<string, { name: string; api: string }> = {
 };
 
 // ---------------------------------------------------------------------------
+// JSONC & CONFIG HELPERS
+// ---------------------------------------------------------------------------
+
+export function parseJsonc(content: string): any {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/,\s*([}\]])/g, '$1');
+  return JSON.parse(stripped);
+}
+
+export function readOpencodeConfig(): Record<string, unknown> | null {
+  for (const p of CONFIG_FILE_PATHS) {
+    try {
+      const raw = fs.readFileSync(p, 'utf-8');
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return parseJsonc(raw);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // SDK-TO-LOCAL TYPE MAPPERS
 // ---------------------------------------------------------------------------
 
-function sdkModelToDevModel(model: Model): ModelsDevModel {
+export function sdkModelToDevModel(model: Model): ModelsDevModel {
   return {
     id: model.id,
     name: model.name,
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
     apiNpm: model.api?.npm,            // exact npm package from opencode's registry
-    tool_call: model.capabilities.toolcall,
-    reasoning: model.capabilities.reasoning,
-    attachment: model.capabilities.attachment,
-    modalities: {
+    tool_call: model.capabilities?.toolcall ?? (model as any).tool_call,
+    reasoning: model.capabilities?.reasoning ?? (model as any).reasoning,
+    attachment: model.capabilities?.attachment ?? (model as any).attachment,
+    modalities: model.capabilities?.input && model.capabilities?.output ? {
       input: Object.entries(model.capabilities.input)
         .filter(([, v]) => v).map(([k]) => k),
       output: Object.entries(model.capabilities.output)
         .filter(([, v]) => v).map(([k]) => k),
-    },
+    } : (model as any).modalities,
     limit: {
-      context: model.limit.context,
-      output: model.limit.output,
+      context: model.limit?.context ?? (model as any).limit?.context,
+      output: model.limit?.output ?? (model as any).limit?.output,
     },
   };
 }
 
-function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
+export function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
   const models: [string, ModelsDevModel][] = [];
 
-  for (const [rawId, model] of Object.entries(sp.models)) {
+  for (const [rawId, model] of Object.entries(sp.models || {})) {
     models.push([rawId, sdkModelToDevModel(model)]);
   }
 
   if (models.length === 0) {return null;}
 
-  const baseURL = sp.options?.baseURL as string | undefined;
-  const apiURL = sp.options?.api as string | undefined;
+  const options = sp.options as Record<string, unknown> | undefined;
+  const baseURL = (options?.baseURL ?? options?.baseUrl ?? options?.api ?? options?.apiUrl) as string | undefined;
+  const npm = (options?.npm ?? (sp as any).npm) as string | undefined;
+  const apiKey = (sp.key ?? options?.apiKey ?? options?.key ?? options?.token ?? options?.authToken) as string | undefined;
 
   return {
     provider: {
       id: sp.id,
-      name: sp.name,
-      api: baseURL ?? apiURL,
+      name: sp.name || sp.id,
+      api: baseURL,
       env: sp.env,
+      npm,
       models: Object.fromEntries(models),
     },
     credential: {
       type: 'api',
-      key: sp.key,
+      key: apiKey,
     },
     models,
   };
@@ -179,12 +219,16 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
  */
 export async function trySdkProviders(port?: number, logPrefix?: string): Promise<Map<string, ProviderEntry> | null> {
   const tag = logPrefix ?? 'TIER 1';
-  const log = (msg: string) => logger(` ${msg}`);
   const url = `http://localhost:${port ?? DEFAULT_SDK_PORT}`;
   logger(`${tag}: SDK discovery → ${url}`);
 
   try {
-    const client = createOpencodeClient({ baseUrl: url });
+    const headers: Record<string, string> = {};
+    if (process.env.OPENCODE_SERVER_PASSWORD) {
+      const auth = Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64');
+      headers['Authorization'] = `Basic ${auth}`;
+    }
+    const client = createOpencodeClient({ baseUrl: url, headers });
     logger(`${tag}: client created, calling config.providers()...`);
 
     const result = await client.config.providers() as { data?: { providers: Provider[] } };
@@ -197,8 +241,9 @@ export async function trySdkProviders(port?: number, logPrefix?: string): Promis
     }
 
     for (const sp of providers) {
-      const modelCount = Object.keys(sp.models).length;
-      logger(`${tag}:  [${sp.id}] "${sp.name}" source=${sp.source} hasKey=${!!sp.key} models=${modelCount}`);
+      const modelCount = Object.keys(sp.models || {}).length;
+      const key = sp.key ?? (sp.options as any)?.apiKey ?? (sp.options as any)?.key;
+      logger(`${tag}:  [${sp.id}] "${sp.name}" source=${sp.source} hasKey=${!!key} models=${modelCount}`);
     }
 
     const configured = new Map<string, ProviderEntry>();
@@ -214,7 +259,7 @@ export async function trySdkProviders(port?: number, logPrefix?: string): Promis
         if (known) {entry.provider.api = known.api;}
       }
       configured.set(sp.id, entry);
-      const keyStatus = sp.key ? 'keyed' : 'no key';
+      const keyStatus = entry.credential.key ? 'keyed' : 'no key';
       logger(`${tag}:  Included "${sp.id}": ${entry.models.length} models (${keyStatus})`);
     }
 
@@ -227,17 +272,110 @@ export async function trySdkProviders(port?: number, logPrefix?: string): Promis
 }
 
 // ---------------------------------------------------------------------------
-// TIER 2: MODELS.DEV + AUTH.JSON
+// TIER 2: CONFIG / MODELS.DEV + AUTH.JSON
 // ---------------------------------------------------------------------------
 
 export function readOpencodeAuth(): OpencodeAuth {
+  const auth: OpencodeAuth = {};
+
+  // First check opencode.json / opencode.jsonc
+  const config = readOpencodeConfig();
+  if (config?.provider && typeof config.provider === 'object') {
+    for (const [providerId, rawProvider] of Object.entries(config.provider as Record<string, any>)) {
+      if (!rawProvider || typeof rawProvider !== 'object') {continue;}
+      const options = rawProvider.options as Record<string, unknown> | undefined;
+      const key = (options?.apiKey ?? options?.key ?? options?.token ?? rawProvider.key) as string | undefined;
+      if (key) {
+        auth[providerId] = { type: 'api', key };
+      }
+    }
+  }
+
+  // Then merge auth.json if present
   for (const p of AUTH_FILE_PATHS) {
     try {
       const raw = fs.readFileSync(p, 'utf-8');
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        Object.assign(auth, parsed);
+        break;
+      }
     } catch { continue; }
   }
-  return {};
+  return auth;
+}
+
+export function configProvidersFromConfigFile(config: Record<string, unknown> | null): Map<string, ProviderEntry> {
+  const result = new Map<string, ProviderEntry>();
+  if (!config || typeof config !== 'object' || !config.provider || typeof config.provider !== 'object') {
+    return result;
+  }
+
+  for (const [providerId, rawProvider] of Object.entries(config.provider as Record<string, any>)) {
+    if (!rawProvider || typeof rawProvider !== 'object') {continue;}
+
+    const options = rawProvider.options as Record<string, unknown> | undefined;
+    const baseURL = (options?.baseURL ?? options?.baseUrl ?? options?.api ?? options?.apiUrl) as string | undefined;
+    const npm = (rawProvider.npm ?? options?.npm) as string | undefined;
+    const apiKey = (options?.apiKey ?? options?.key ?? options?.token ?? rawProvider.key) as string | undefined;
+
+    const models: [string, ModelsDevModel][] = [];
+    if (rawProvider.models && typeof rawProvider.models === 'object') {
+      for (const [modelKey, rawModel] of Object.entries(rawProvider.models as Record<string, any>)) {
+        if (!rawModel || typeof rawModel !== 'object') {continue;}
+        const id = rawModel.id || `${providerId}/${modelKey}`;
+        const name = rawModel.name || modelKey;
+        const toolCall = rawModel.tool_call ?? rawModel.capabilities?.toolcall ?? true;
+        const reasoning = rawModel.reasoning ?? rawModel.capabilities?.reasoning ?? false;
+        const attachment = rawModel.attachment ?? rawModel.capabilities?.attachment ?? false;
+        const modalities = rawModel.modalities ?? (rawModel.capabilities?.input && rawModel.capabilities?.output ? {
+          input: Object.entries(rawModel.capabilities.input).filter(([, v]) => v).map(([k]) => k),
+          output: Object.entries(rawModel.capabilities.output).filter(([, v]) => v).map(([k]) => k),
+        } : undefined);
+        const limit = rawModel.limit ? {
+          context: rawModel.limit.context,
+          output: rawModel.limit.output,
+        } : undefined;
+
+        models.push([
+          modelKey,
+          {
+            id,
+            name,
+            family: providerId,
+            apiUrl: rawModel.apiUrl ?? rawModel.api?.url,
+            apiNpm: rawModel.apiNpm ?? rawModel.api?.npm ?? npm,
+            tool_call: toolCall,
+            reasoning,
+            attachment,
+            modalities,
+            limit,
+          },
+        ]);
+      }
+    }
+
+    if (models.length === 0) {
+      continue;
+    }
+
+    result.set(providerId, {
+      provider: {
+        id: providerId,
+        name: rawProvider.name || providerId,
+        api: baseURL,
+        npm,
+        models: Object.fromEntries(models),
+      },
+      credential: {
+        type: 'api',
+        key: apiKey,
+      },
+      models,
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -271,7 +409,6 @@ function filterModelsForProviders(
   catalog: ModelsDevCatalog,
   auth: OpencodeAuth,
 ): Map<string, ProviderEntry> | null {
-  const log = (msg: string) => logger(` ${msg}`);
   const result = new Map<string, ProviderEntry>();
 
   for (const [providerId, credential] of Object.entries(auth)) {
@@ -310,7 +447,6 @@ function filterModelsForProviders(
  * are both unavailable.
  */
 function makeBareFallback(auth: OpencodeAuth): Map<string, ProviderEntry> | null {
-  const log = (msg: string) => logger(` ${msg}`);
   const result = new Map<string, ProviderEntry>();
 
   for (const [providerId, credential] of Object.entries(auth)) {
@@ -345,16 +481,32 @@ function makeBareFallback(auth: OpencodeAuth): Map<string, ProviderEntry> | null
  * Does NOT try the SDK path; that's handled by extension.ts with server mgmt.
  */
 export async function fallbackProviders(): Promise<Map<string, ProviderEntry>> {
+  const config = readOpencodeConfig();
+  const configMap = configProvidersFromConfigFile(config);
+
   const [auth, catalog] = await Promise.all([
     Promise.resolve().then(() => readOpencodeAuth()),
     fetchModelsCatalogger(),
   ]);
   const ids = Object.keys(auth);
-  logger(` auth.json: ${ids.length} provider(s) - ${ids.join(', ') || '(none)'}`);
+  logger(` config/auth discovery: ${configMap.size} config provider(s), ${ids.length} auth provider(s) - ${ids.join(', ') || '(none)'}`);
 
   // Tier 2: models.dev + auth.json
   const catalogResult = filterModelsForProviders(catalog, auth);
-  if (catalogResult) {return catalogResult;}
+
+  const merged = new Map<string, ProviderEntry>();
+  if (catalogResult) {
+    for (const [k, v] of catalogResult) {
+      merged.set(k, v);
+    }
+  }
+  for (const [k, v] of configMap) {
+    merged.set(k, v);
+  }
+
+  if (merged.size > 0) {
+    return merged;
+  }
 
   // Tier 3: bare fallback
   logger(` TIER 3: bare fallback - no catalog available`);

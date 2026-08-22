@@ -25,7 +25,7 @@
 
 import * as vscode from 'vscode';
 
-import { fallbackProviders, trySdkProviders } from './opencodeConfig.js';
+import { fallbackProviders, setConfigLogger, trySdkProviders } from './opencodeConfig.js';
 import { initLogger, log } from './logger.js';
 
 import { OpencodeModelProvider } from './provider.js';
@@ -60,6 +60,7 @@ let refreshPromise: Promise<void> | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
   initLogger();
+  setConfigLogger((msg) => log(msg, 'info'));
   log('activate()', 'info');
   extContext = context;
 
@@ -209,7 +210,12 @@ async function ensureOpencodeServer(): Promise<number | null> {
 
 async function isServerAlive(port: number): Promise<boolean> {
   try {
-    const resp = await fetch(`http://localhost:${port}/global/health`, { signal: AbortSignal.timeout(1000) });
+    const headers: Record<string, string> = {};
+    if (process.env.OPENCODE_SERVER_PASSWORD) {
+      const auth = Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64');
+      headers['Authorization'] = `Basic ${auth}`;
+    }
+    const resp = await fetch(`http://localhost:${port}/global/health`, { headers, signal: AbortSignal.timeout(1000) });
     return resp.ok;
   } catch {
     return false;
