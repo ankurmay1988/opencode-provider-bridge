@@ -3,6 +3,38 @@ import type { ModelMessage } from 'ai';
 export const ZEN_REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
 
 /**
+ * True when the model is served by a DeepSeek-compatible reasoning API.
+ *
+ * DeepSeek thinking models expose `reasoning_content` on the OpenAI wire
+ * format and require that *every* replayed assistant message carries it
+ * while thinking mode is enabled — including VS Code's synthetic
+ * tool-call-only assistant turns. Other reasoning models (Anthropic,
+ * Gemini, GPT, Grok, Kimi, GLM, Qwen, ...) do not share that requirement
+ * and must not be sent `reasoning_content`, so this gate keeps the
+ * empty-field injection DeepSeek-only.
+ *
+ * Detection is deliberately broad across every identifier we have for a
+ * model: the configured provider id, the registry model id (prefixed like
+ * `opencode/deepseek-v4-flash` in SDK discovery, bare like
+ * `deepseek-v4-flash` in models.dev discovery), the model family
+ * (DeepSeek models carry family `deepseek`), and the display name.
+ */
+export function isDeepSeekModel(options: {
+  providerId: string;
+  modelId: string;
+  family?: string;
+  name?: string;
+}): boolean {
+  const haystack = [
+    options.providerId,
+    options.modelId,
+    options.family ?? '',
+    options.name ?? '',
+  ].join(' ');
+  return /deepseek/i.test(haystack);
+}
+
+/**
  * DeepSeek thinking mode requires reasoning_content on every replayed
  * assistant message, including VS Code's synthetic tool-call history.
  * Provider metadata makes the OpenAI-compatible serializer emit the required

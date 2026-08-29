@@ -13,14 +13,15 @@ import { log } from './logger.js';
 import {
   ensureZenReasoningContent,
   extractZenReasoning,
-  type ZenReasoningHistoryPart,
+  isDeepSeekModel,
   withThinkingMetadata,
-  ZEN_REASONING_CONTENT_MIME,
+  type ZenReasoningHistoryPart,
 } from './zenReasoning.js';
 
 const VERBOSE_FETCH = createVerboseFetch(globalThis.fetch);
 
-export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
+export class OpencodeModelProvider
+  implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
 
@@ -112,10 +113,6 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       family: modelMeta?.family,
       apiUrl: modelMeta?.apiUrl,
       apiNpm: modelMeta?.apiNpm,
-      tool_call: modelMeta?.tool_call,
-      reasoning: modelMeta?.reasoning,
-      modalities: modelMeta?.modalities,
-      limits: modelMeta?.limit,
     }, null, 2)}`, 'debug');
 
     // Use per-model apiUrl if available, otherwise fall back to provider-level URL
@@ -146,7 +143,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         this.anthropicProvider = createAnthropic({
           name: this.providerInfo.id,
           baseURL: baseUrl,
-          authToken: this.apiKey,
+          apiKey: this.apiKey,
           fetch: VERBOSE_FETCH,
         });
       }
@@ -173,20 +170,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     const models: vscode.LanguageModelChatInformation[] = [];
 
     for (const [modelId, modelMeta] of this.enabledModels) {
-      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.tool_call} reasoning=${modelMeta.reasoning} ctx=${modelMeta.limit?.context ?? '?'}`, 'debug');
+      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.capabilities?.toolCalling ?? false} reasoning=${modelMeta.reasoning ?? false} ctx=${modelMeta.maxInputTokens ?? '?'}`, 'debug');
 
-      models.push({
-        id: modelId,
-        name: modelMeta.name || modelId,
-        family: modelMeta.family || 'unknown',
-        version: '1.0.0',
-        maxInputTokens: modelMeta.limit?.context ?? 128000,
-        maxOutputTokens: modelMeta.limit?.output ?? 4096,
-        capabilities: {
-          imageInput: !!(modelMeta.modalities?.input?.includes('image')),
-          toolCalling: modelMeta.tool_call ?? false,
-        },
-      });
+      models.push(modelMeta);
     }
 
     log(`[opencode-provider-bridge] Registered ${models.length} models for provider "${this.providerInfo.name}"`, 'info');
@@ -204,7 +190,18 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     let reasoningEnded = false;
 
     const modelMeta = this.enabledModels.get(model.id);
-    const ensureReasoningField = this.providerInfo.id === 'opencode' && modelMeta?.reasoning === true;
+    // DeepSeek thinking APIs require reasoning_content on every replayed
+    // assistant message (including VS Code's synthetic tool-call history).
+    // Only DeepSeek models are affected: Anthropic, Gemini, GPT, Grok,
+    // Kimi, GLM, Qwen, ... do not share that requirement, so the empty
+    // field is injected exclusively for DeepSeek reasoning models.
+    const deepSeekModel = isDeepSeekModel({
+      providerId: this.providerInfo.id,
+      modelId: model.id,
+      family: modelMeta?.family,
+      name: modelMeta?.name,
+    });
+    const ensureReasoningField = modelMeta?.reasoning === true && deepSeekModel;
     const coreMessages = ensureZenReasoningContent(
       this.toModelMessages(messages),
       ensureReasoningField,

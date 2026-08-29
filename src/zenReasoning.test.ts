@@ -6,6 +6,7 @@ import { generateText } from 'ai';
 import {
   ensureZenReasoningContent,
   extractZenReasoning,
+  isDeepSeekModel,
   withThinkingMetadata,
   ZEN_REASONING_CONTENT_MIME,
 } from './zenReasoning.js';
@@ -184,7 +185,7 @@ test('does not serialize empty reasoning_content for ordinary models', async () 
   assert.equal(assistant.content, 'ordinary answer');
 });
 
-test('adds empty reasoning_content to Zen assistant tool history', async () => {
+test('adds empty reasoning_content to DeepSeek assistant tool history', async () => {
   const messages = ensureZenReasoningContent([{
     role: 'assistant',
     content: [{
@@ -226,4 +227,50 @@ test('preserves real Zen reasoning and leaves other providers unchanged', async 
 
   assert.deepEqual(zen, original);
   assert.equal(ordinary[0].content, 'answer');
+});
+
+test('identifies DeepSeek models across providers and discovery tiers', () => {
+  // Zen (OpenCode provider) serving a DeepSeek model via SDK discovery.
+  assert.equal(isDeepSeekModel({
+    providerId: 'opencode',
+    modelId: 'opencode/deepseek-v4-flash',
+    family: 'opencode',
+    name: 'DeepSeek V4 Flash',
+  }), true);
+
+  // models.dev discovery: bare model id, no family metadata.
+  assert.equal(isDeepSeekModel({
+    providerId: 'opencode',
+    modelId: 'deepseek-v4-flash',
+    name: 'DeepSeek V4 Flash',
+  }), true);
+
+  // Direct DeepSeek provider.
+  assert.equal(isDeepSeekModel({
+    providerId: 'deepseek',
+    modelId: 'deepseek/deepseek-v4-pro',
+    family: 'deepseek',
+    name: 'DeepSeek V4 Pro',
+  }), true);
+
+  // Bare fallback placeholder: family carries the provider id.
+  assert.equal(isDeepSeekModel({
+    providerId: 'deepseek',
+    modelId: 'deepseek/default',
+    family: 'deepseek',
+  }), true);
+});
+
+test('does not treat non-DeepSeek reasoning models as DeepSeek', () => {
+  for (const candidate of [
+    { providerId: 'opencode', modelId: 'opencode/kimi-k2-thinking', family: 'opencode', name: 'Kimi K2 Thinking' },
+    { providerId: 'opencode', modelId: 'opencode/gemini-3-pro', family: 'opencode', name: 'Gemini 3 Pro' },
+    { providerId: 'opencode', modelId: 'opencode/claude-opus-4-8', family: 'opencode', name: 'Claude Opus 4.8' },
+    { providerId: 'opencode', modelId: 'opencode/gpt-5', family: 'opencode', name: 'GPT-5' },
+    { providerId: 'opencode', modelId: 'opencode/grok-4.6', family: 'opencode', name: 'Grok 4.6' },
+    { providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-4', family: 'anthropic', name: 'Claude Sonnet 4' },
+    { providerId: 'google', modelId: 'google/gemini-3.1-pro', family: 'google', name: 'Gemini 3.1 Pro' },
+  ]) {
+    assert.equal(isDeepSeekModel(candidate), false, JSON.stringify(candidate));
+  }
 });

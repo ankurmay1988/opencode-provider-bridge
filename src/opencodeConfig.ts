@@ -39,6 +39,7 @@ import type { Model, Provider } from '@opencode-ai/sdk';
 
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import { log as logger } from './logger.js';
+import vscode from 'vscode';
 
 const PKG_NAME = 'opencode-provider-bridge';
 
@@ -56,19 +57,13 @@ export interface OpencodeAuth {
   [providerId: string]: ProviderCredential;
 }
 
-export interface ModelsDevModel {
-  id: string;
-  name: string;
+export interface ModelsDevModel extends vscode.LanguageModelChatInformation {
   family: string;
   /** Exact API base URL from opencode's model registry (SDK Model.api.url). */
   apiUrl?: string;
   /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
   apiNpm?: string;
-  tool_call?: boolean;
   reasoning?: boolean;
-  attachment?: boolean;
-  modalities?: { input: string[]; output: string[] };
-  limit?: { context?: number; output?: number };
 }
 
 export interface ModelsDevProvider {
@@ -117,26 +112,31 @@ const KNOWN_PROVIDERS: Record<string, { name: string; api: string }> = {
 // SDK-TO-LOCAL TYPE MAPPERS
 // ---------------------------------------------------------------------------
 
-function sdkModelToDevModel(model: Model): ModelsDevModel {
+function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
   return {
-    id: model.id,
-    name: model.name,
+    id: `${model.providerID}/${model.id}`,
+    name: `${sp.name} - ${model.name}`,
     family: model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
-    apiNpm: model.api?.npm,            // exact npm package from opencode's registry
-    tool_call: model.capabilities.toolcall,
+    apiNpm: model.api?.npm,
+    maxInputTokens: model.limit.context,
+    maxOutputTokens: model.limit.output,
+    isUserSelectable: true,
+    detail: model.name,
+    capabilities: {
+      imageInput: model.capabilities.input.image,
+      toolCalling: model.capabilities.toolcall,
+    },
     reasoning: model.capabilities.reasoning,
-    attachment: model.capabilities.attachment,
-    modalities: {
-      input: Object.entries(model.capabilities.input)
-        .filter(([, v]) => v).map(([k]) => k),
-      output: Object.entries(model.capabilities.output)
-        .filter(([, v]) => v).map(([k]) => k),
-    },
-    limit: {
-      context: model.limit.context,
-      output: model.limit.output,
-    },
+    version: "1.0.0",
+    cacheCost: model.cost?.cache?.read,
+    cacheWriteCost: model.cost?.cache?.write,
+    inputCost: model.cost?.input,
+    outputCost: model.cost?.output,
+    longContextCacheCost: model.cost?.experimentalOver200K?.cache?.read,
+    longContextCacheWriteCost: model.cost?.experimentalOver200K?.cache?.write,
+    longContextInputCost: model.cost?.experimentalOver200K?.input,
+    longContextOutputCost: model.cost?.experimentalOver200K?.output,
   };
 }
 
@@ -144,7 +144,7 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
   const models: [string, ModelsDevModel][] = [];
 
   for (const [rawId, model] of Object.entries(sp.models)) {
-    models.push([rawId, sdkModelToDevModel(model)]);
+    models.push([rawId, sdkModelToDevModel(sp, model)]);
   }
 
   if (models.length === 0) {return null;}
@@ -326,7 +326,11 @@ function makeBareFallback(auth: OpencodeAuth): Map<string, ProviderEntry> | null
         id: `${providerId}/default`,
         name,
         family: providerId,
-        tool_call: true,
+        capabilities: { imageInput: false, toolCalling: true },
+        version: "1.0.0",
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        isUserSelectable: true,
       }]],
     });
 
