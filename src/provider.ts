@@ -20,6 +20,43 @@ import {
 
 const VERBOSE_FETCH = createVerboseFetch(globalThis.fetch);
 
+/**
+ * Normalizes a tool-call input to a JSON object.
+ *
+ * The AI SDK's OpenAI-compatible serializer emits `function.arguments` as
+ * `JSON.stringify(input)`. The opencode server requires that value to be a
+ * JSON object, so a string (or any other primitive) input would be serialized
+ * as a JSON string/primitive and rejected with a 400 error:
+ *   "Assistant tool call function.arguments must be a JSON object."
+ *
+ * VS Code can hand us a non-object input (e.g. the model returned a
+ * JSON-string literal for `arguments`, or history replay provides a string),
+ * so we coerce it here:
+ *   - plain object        → used as-is
+ *   - JSON string that    → parsed (when it yields a plain object)
+ *     parses to an object
+ *   - anything else       → wrapped as { value: <input> }
+ */
+function normalizeToolInput(input: unknown): Record<string, unknown> {
+  if (input === null || input === undefined) {
+    return {};
+  }
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+  if (typeof input === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(input);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Not valid JSON — fall through to wrapping.
+    }
+  }
+  return { value: input };
+}
+
 export class OpencodeModelProvider
   implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
@@ -300,7 +337,11 @@ export class OpencodeModelProvider
           case 'tool-call':
             hasToolCall = true;
             log(`[opencode-provider-bridge] TOOL_OUT: ${part.toolName} id=${part.toolCallId}`, 'debug');
-            report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, part.input as Record<string, unknown>));
+            report(new vscode.LanguageModelToolCallPart(
+              part.toolCallId,
+              part.toolName,
+              normalizeToolInput(part.input),
+            ));
             break;
 
           case 'tool-result':
@@ -432,7 +473,7 @@ export class OpencodeModelProvider
           toolCallParts.push({
             toolCallId: part.callId,
             toolName: part.name,
-            input: part.input,
+            input: normalizeToolInput(part.input),
           });
         } else if (part instanceof vscode.LanguageModelToolResultPart) {
           log(`[opencode-provider-bridge] convert: ToolResult id=${part.callId}`, 'debug');

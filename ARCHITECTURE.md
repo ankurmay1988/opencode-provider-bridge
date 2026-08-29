@@ -10,14 +10,14 @@ flowchart TB
         direction TB
         ext["extension.ts<br/>activate() → BridgeProvider<br/>routes by model.family"]
 
-        subgraph ServerMgmt["Server Management"]
+        subgraph ServerMgmt["Server Management — serverManager.ts"]
             ensure["ensureOpencodeServer()"]
             alive["isServerAlive(port)"]
             launch["launchTerminal()<br/>opencode serve --port X<br/>hideFromUser: true"]
         end
 
-        cache["getProviders()<br/>cachedProviders + three-tier discovery"]
-        config["opencodeConfig.ts<br/>SDK discovery + Tiers 2/3 fallback"]
+        cache["getProviders()<br/>cachedProviders + SDK-only discovery"]
+        config["opencodeConfig.ts<br/>SDK discovery (mandatory server)"]
         prov["provider.ts<br/>OpencodeModelProvider<br/>getLanguageModel() routes by apiNpm"]
         utils["providerUtils.ts<br/>simplifySchema + extractTextFromToolResult"]
         verbose["verboseFetch.ts<br/>SSE stream logging wrapper"]
@@ -33,9 +33,8 @@ flowchart TB
         prov --uses--> verbose
     end
 
-    subgraph Discovery["Discovery Sources"]
+    subgraph Discovery["Discovery Source"]
         sdk["@opencode-ai/sdk<br/>createOpencodeClient()<br/>client.config.providers()"]
-        auth["auth.json<br/>~/.config/opencode/"]
     end
 
     subgraph Execution["AI SDK (bundled)"]
@@ -51,7 +50,6 @@ flowchart TB
     end
 
     config --> sdk
-    config -.-> auth
     prov --> oai
     prov --> anth
     prov --> google
@@ -108,13 +106,14 @@ flowchart LR
 | Function | Role |
 |---|---|
 | `activate()` | Registers `BridgeProvider` + 4 commands + status bar; starts background warm-up |
-| `deactivate()` | Disposes headless server terminal, clears cache |
-| `ensureOpencodeServer()` | Cached port → check :4096 → launch headless terminal |
-| `isServerAlive(port)` | Pings `/global/health` endpoint |
-| `launchTerminal()` | Runs `opencode serve --port <random>` in hidden terminal |
-| `getProviders(context)` | SDK via server → fallback → wrap in `OpencodeModelProvider` |
+| `deactivate()` | Disposes headless server terminal (via `disposeServer()`), clears cache |
+| `getProviders(context)` | SDK via server (mandatory) → wrap in `OpencodeModelProvider`; empty when server unavailable |
 | `refreshProviderCache(provider)` | Background refresh; fires `onDidChange` only if models actually changed |
 | `showStatus()` | Notification with per-provider key status and model counts |
+
+Server lifecycle functions (`ensureOpencodeServer()`, `isServerAlive(port)`,
+`launchTerminal()`, `isOpencodeCliAvailable()`, `resetServerState()`,
+`disposeServer()`) live in [`serverManager.ts`](#9-server-management).
 
 ### Commands
 
@@ -152,8 +151,9 @@ The `BridgeProvider` implements `vscode.LanguageModelChatProvider` and acts as a
 ## 4. Provider Discovery — `src/opencodeConfig.ts`
 The opencode SDK returns per-model metadata with `api.url` (the exact API endpoint for that model) and `api.npm` (the AI SDK package to use for that model). This is used by `provider.ts` for SDK routing.
 
-### Tiers
-Two-tier fallback: SDK → models.dev + auth.json → bare fallback. No provider synthesis — only shows what opencode reports.
+### SDK-Only Discovery (mandatory server)
+
+The opencode server is the single source of truth. `trySdkProviders(port?)` calls `createOpencodeClient()` → `client.config.providers()` on the given port and returns all configured providers with keys, models, capabilities, and exact API URLs. There is **no** models.dev or auth.json fallback — if the server is unavailable, discovery returns an empty map and `serverManager.ts` shows a retryable error popup.
 
 ### Types
 
@@ -163,18 +163,6 @@ Two-tier fallback: SDK → models.dev + auth.json → bare fallback. No provider
 | `ModelsDevModel` | Model metadata with `apiUrl` (exact endpoint from SDK registry) |
 | `ModelsDevProvider` | Provider metadata |
 | `ProviderEntry` | Combined: provider + credential + models |
-
-### Tier 1 — SDK Discovery (Preferred)
-
-`trySdkProviders(port?)` calls `createOpencodeClient()` → `client.config.providers()` on the given port. Returns all configured providers with keys, models, capabilities, and exact API URLs.
-
-### Tier 2 — models.dev + auth.json
-
-Fetches the public `models.dev/api.json` catalog and intersects it with credentials from `auth.json` (reads from `~/.local/share/opencode/auth.json`, `~/.opencode/auth.json`, or `~/.config/opencode/auth.json`).
-
-### Tier 3 — Bare Fallback
-
-Every auth.json entry gets one placeholder model with `tool_call: true`.
 
 ---
 
@@ -329,27 +317,34 @@ Setting: `"opencode-provider-bridge.logLevel"` in VS Code settings.
 
 ## 9. Server Management
 
-The extension manages the opencode server lifecycle:
+Server lifecycle lives in `src/serverManager.ts`, which owns the opencode
+server lifecycle (port discovery, headless start, CLI check, startup error
+popup, terminal disposal).
 
 ### Port Discovery
 
 ```
-ensureOpencodeServer()
+ensureOpencodeServer(onRetry?)
   ├─ serverPort cached? ─Yes→ isServerAlive() → return port
   │                             ↓ dead → clear cache
   ├─ Check :4096 ────Alive→ cache + return
+  ├─ opencode CLI on PATH? ─No→ error popup ("Retry" / "Get OpenCode") + return null
+  │                                        └─ server is mandatory — no models.dev fallback
   └─ Launch headless ──→ opencode serve --port <random>
                           └─ hideFromUser: true (no terminal tab)
                           └─ Wait up to 15s for /global/health
-                          └─ cache + return
+                          └─ alive → cache + return
+                          └─ timeout → error popup ("Retry" / "Get OpenCode") + return null
 ```
+
+"Retry" re-runs discovery (via the `onRetry` callback wired in `extension.ts:getProviders()`), so the extension can continue loading normally once opencode is set up. The popup is shown at most once per session; it is re-armed by a successful connection, the Refresh Models command, or pressing Retry.
 
 ### Cleanup
 
 | Event | Action |
 |---|---|
-| Extension deactivates | `serverTerminal.dispose()` kills the process |
-| Refresh Models | `serverPort = null` forces re-check |
+| Extension deactivates | `disposeServer()` → `serverTerminal.dispose()` kills the process |
+| Refresh Models | `resetServerState()` → `serverPort = null` forces re-check; resets the once-per-session startup-error popup |
 
 ---
 
@@ -365,7 +360,7 @@ API keys are stored in `vscode.SecretStorage`:
 ### Retrieval priority
 
 ```
-SecretStorage → SDK-provided key → auth.json key → empty string
+SecretStorage → SDK-provided key → empty string
 ```
 
 Users set keys via the `setApiKey` command, which shows only **discovered** providers with their key status.
@@ -449,8 +444,9 @@ opencode-provider-bridge/
 ├── README.md              — Marketplace listing
 ├── ARCHITECTURE.md        — This file
 └── src/
-    ├── extension.ts       — Entry point, activation, BridgeProvider, server mgmt, key management
-    ├── opencodeConfig.ts  — 3-tier provider discovery (SDK → catalog → fallback)
+    ├── extension.ts       — Entry point, activation, BridgeProvider, key management
+    ├── serverManager.ts   — opencode server lifecycle (find/start CLI, health check, popup)
+    ├── opencodeConfig.ts  — SDK-only provider discovery (mandatory opencode server)
     ├── provider.ts        — Per-provider API calls via @ai-sdk/openai-compatible + streamText
     └── logger.ts          — Verbosity-gated logging (error/warn/info/debug)
 ```

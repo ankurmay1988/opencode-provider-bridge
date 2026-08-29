@@ -2,46 +2,25 @@
 // opencodeConfig.ts  —  Provider & Model Discovery
 // =============================================================================
 //
-// DISCOVERY TIERS (tried in order until one succeeds):
+// DISCOVERY — SDK ONLY (mandatory opencode server)
 //
-//   TIER 1 — SDK (preferred)
-//     Connects to a running opencode server via @opencode-ai/sdk.
-//     Returns live provider configs with API keys, all model names,
-//     capabilities (toolcall, vision, reasoning), context limits, etc.
-//     Requires: opencode CLI/desktop running on :4096.
+//   The opencode server is the single source of truth for providers and
+//   models. We connect to a running server via @opencode-ai/sdk and read
+//   live provider configs: API keys, all model names, capabilities
+//   (toolcall, vision, reasoning), context limits, per-model api.url and
+//   api.npm (used for SDK routing), and cost metadata.
 //
-//   TIER 2 — models.dev + auth.json (fallback)
-//     Fetches https://models.dev/api.json (public provider/model catalog)
-//     and intersects it with the user's auth.json credentials.
-//     Returns model names + capabilities from the catalog for any
-//     provider the user has credentials for (nvidia, vultr, etc.).
-//     Requires: internet access for the catalog fetch.
-//
-//   TIER 3 — auth.json only (bare fallback)
-//     Creates a single placeholder model per provider with no metadata.
-//     The provider shows up in VS Code's picker but the user won't
-//     see model names, context limits, or capabilities.
-//     Requires: nothing — works fully offline.
-//
-// WHY NOT JUST models.dev?
-//   models.dev alone gives model metadata but no API keys (those are
-//   in auth.json). models.dev + auth.json together work as well as
-//   the SDK — we just lose live config (custom baseURLs, overrides).
-//   We removed models.dev earlier but added it back because without
-//   it Tier 3 shows only "default" model names — useless to the user.
+//   There is NO fallback to models.dev or auth.json. If the server is not
+//   running, serverManager.ts starts `opencode serve` (or shows a retryable
+//   error popup when the CLI is missing). Discovery returns an empty map
+//   when no server is available.
 // =============================================================================
-
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 import type { Model, Provider } from '@opencode-ai/sdk';
 
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import { log as logger } from './logger.js';
 import vscode from 'vscode';
-
-const PKG_NAME = 'opencode-provider-bridge';
 
 // ---------------------------------------------------------------------------
 // PUBLIC TYPES
@@ -51,10 +30,6 @@ export interface ProviderCredential {
   type: 'api' | 'oauth';
   key?: string;
   access?: string;
-}
-
-export interface OpencodeAuth {
-  [providerId: string]: ProviderCredential;
 }
 
 export interface ModelsDevModel extends vscode.LanguageModelChatInformation {
@@ -75,10 +50,6 @@ export interface ModelsDevProvider {
   models: Record<string, ModelsDevModel>;
 }
 
-export interface ModelsDevCatalog {
-  [providerId: string]: ModelsDevProvider;
-}
-
 export type ProviderEntry = {
   provider: ModelsDevProvider;
   credential: ProviderCredential;
@@ -90,18 +61,11 @@ export type ProviderEntry = {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SDK_PORT = 4096;
-const MODELS_DEV_URL = 'https://models.dev/api.json';
-
-const AUTH_FILE_PATHS = [
-  path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
-  path.join(os.homedir(), '.opencode', 'auth.json'),
-  path.join(os.homedir(), '.config', 'opencode', 'auth.json'),
-];
 
 /**
  * Hardcoded entries for opencode-managed providers (Zen, Go).
- * These may not appear in the public models.dev catalog so we keep
- * them here as a last-resort fallback.
+ * Used to fill in the provider-level API URL when the SDK does not
+ * return one for these providers.
  */
 const KNOWN_PROVIDERS: Record<string, { name: string; api: string }> = {
   opencode:      { name: 'OpenCode Zen', api: 'https://opencode.ai/zen/v1' },
@@ -109,10 +73,53 @@ const KNOWN_PROVIDERS: Record<string, { name: string; api: string }> = {
 };
 
 // ---------------------------------------------------------------------------
+// COST UNITS
+// ---------------------------------------------------------------------------
+//
+// opencode reports model cost in USD per 1M tokens (its Model.cost fields map
+// to models.dev, and its TUI renders them with a "$" sign). VS Code's model
+// management UI instead expects AI credits per 1M tokens, where 1 credit =
+// $0.01 USD (the same convention GitHub Copilot uses). We therefore convert
+// USD → credits (× 100) for the cost fields, and also expose a human-readable
+// dollar `pricing` label.
+
+/** 1 AI credit = $0.01 USD (GitHub Copilot / VS Code convention). */
+const USD_PER_CREDIT = 0.01;
+
+/** Converts a USD-per-1M-tokens price to VS Code AI credits per 1M tokens. */
+function usdToCredits(usd: number | undefined): number | undefined {
+  if (usd === undefined || usd === null || !Number.isFinite(usd)) {return undefined;}
+  return usd / USD_PER_CREDIT;
+}
+
+/** Formats a USD-per-1M-tokens price for display, e.g. "$0.14/M". */
+function formatUsdPerM(usd: number | undefined): string | undefined {
+  if (usd === undefined || usd === null || !Number.isFinite(usd)) {return undefined;}
+  return `$${usd.toFixed(2)}/M`;
+}
+
+// ---------------------------------------------------------------------------
 // SDK-TO-LOCAL TYPE MAPPERS
 // ---------------------------------------------------------------------------
 
 function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
+  // opencode reports cost in USD per 1M tokens; VS Code expects AI credits
+  // per 1M tokens (1 credit = $0.01). Convert, and keep a dollar label too.
+  const inputUsd = model.cost?.input;
+  const outputUsd = model.cost?.output;
+  const cacheReadUsd = model.cost?.cache?.read;
+  const cacheWriteUsd = model.cost?.cache?.write;
+  const longInputUsd = model.cost?.experimentalOver200K?.input;
+  const longOutputUsd = model.cost?.experimentalOver200K?.output;
+  const longCacheReadUsd = model.cost?.experimentalOver200K?.cache?.read;
+  const longCacheWriteUsd = model.cost?.experimentalOver200K?.cache?.write;
+
+  const pricingParts: string[] = [];
+  const inLabel = formatUsdPerM(inputUsd);
+  const outLabel = formatUsdPerM(outputUsd);
+  if (inLabel) {pricingParts.push(`In: ${inLabel}`);}
+  if (outLabel) {pricingParts.push(`Out: ${outLabel}`);}
+
   return {
     id: `${model.providerID}/${model.id}`,
     name: `${sp.name} - ${model.name}`,
@@ -129,14 +136,15 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
     },
     reasoning: model.capabilities.reasoning,
     version: "1.0.0",
-    cacheCost: model.cost?.cache?.read,
-    cacheWriteCost: model.cost?.cache?.write,
-    inputCost: model.cost?.input,
-    outputCost: model.cost?.output,
-    longContextCacheCost: model.cost?.experimentalOver200K?.cache?.read,
-    longContextCacheWriteCost: model.cost?.experimentalOver200K?.cache?.write,
-    longContextInputCost: model.cost?.experimentalOver200K?.input,
-    longContextOutputCost: model.cost?.experimentalOver200K?.output,
+    pricing: pricingParts.length > 0 ? pricingParts.join(' · ') : undefined,
+    cacheCost: usdToCredits(cacheReadUsd),
+    cacheWriteCost: usdToCredits(cacheWriteUsd),
+    inputCost: usdToCredits(inputUsd),
+    outputCost: usdToCredits(outputUsd),
+    longContextCacheCost: usdToCredits(longCacheReadUsd),
+    longContextCacheWriteCost: usdToCredits(longCacheWriteUsd),
+    longContextInputCost: usdToCredits(longInputUsd),
+    longContextOutputCost: usdToCredits(longOutputUsd),
   };
 }
 
@@ -169,7 +177,7 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
 }
 
 // ---------------------------------------------------------------------------
-// TIER 1: SDK-BASED DISCOVERY
+// SDK-BASED DISCOVERY
 // ---------------------------------------------------------------------------
 
 /**
@@ -178,7 +186,7 @@ function sdkProviderToEntry(sp: Provider): ProviderEntry | null {
  * @param logPrefix — optional label for log lines (e.g. "retry")
  */
 export async function trySdkProviders(port?: number, logPrefix?: string): Promise<Map<string, ProviderEntry> | null> {
-  const tag = logPrefix ?? 'TIER 1';
+  const tag = logPrefix ?? 'SDK';
   const log = (msg: string) => logger(` ${msg}`);
   const url = `http://localhost:${port ?? DEFAULT_SDK_PORT}`;
   logger(`${tag}: SDK discovery → ${url}`);
@@ -224,147 +232,4 @@ export async function trySdkProviders(port?: number, logPrefix?: string): Promis
     logger(`${tag} failed: ${(err as Error).message}`);
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// TIER 2: MODELS.DEV + AUTH.JSON
-// ---------------------------------------------------------------------------
-
-export function readOpencodeAuth(): OpencodeAuth {
-  for (const p of AUTH_FILE_PATHS) {
-    try {
-      const raw = fs.readFileSync(p, 'utf-8');
-      return JSON.parse(raw);
-    } catch { continue; }
-  }
-  return {};
-}
-
-/**
- * Fetch the public models.dev catalog.
- * Non-blocking — if the fetch fails we return {} and move to Tier 3.
- */
-async function fetchModelsCatalogger(): Promise<ModelsDevCatalog> {
-  logger(` TIER 2: fetching models.dev catalog...`);
-  try {
-    const resp = await fetch(MODELS_DEV_URL);
-    if (!resp.ok) {
-      logger(`  models.dev returned HTTP ${resp.status}`);
-      return {};
-    }
-    const catalog = await resp.json() as ModelsDevCatalog;
-    const count = Object.keys(catalog).length;
-    logger(`  models.dev loaded: ${count} provider(s) in catalog`);
-    return catalog;
-  } catch (err) {
-    logger(`  models.dev fetch failed: ${(err as Error).message}`);
-    return {};
-  }
-}
-
-/**
- * Intersect auth.json credentials with the models.dev catalog.
- * Every provider with a credential AND a catalog entry gets included
- * with its full model list (names, capabilities, limits).
- */
-function filterModelsForProviders(
-  catalog: ModelsDevCatalog,
-  auth: OpencodeAuth,
-): Map<string, ProviderEntry> | null {
-  const log = (msg: string) => logger(` ${msg}`);
-  const result = new Map<string, ProviderEntry>();
-
-  for (const [providerId, credential] of Object.entries(auth)) {
-    const providerInfo = catalog[providerId];
-    if (!providerInfo) {
-      logger(`  "${providerId}" NOT in models.dev catalog — skipping`);
-      continue;
-    }
-
-    const supportedModels = Object.entries(providerInfo.models);
-    if (supportedModels.length === 0) {
-      logger(`  "${providerId}" has 0 models in catalog — skipping`);
-      continue;
-    }
-
-    result.set(providerId, {
-      provider: providerInfo,
-      credential,
-      models: supportedModels,
-    });
-
-    logger(`  Included "${providerId}": ${supportedModels.length} models from catalog`);
-  }
-
-  return result.size > 0 ? result : null;
-}
-
-// ---------------------------------------------------------------------------
-// TIER 3: AUTH.JSON ONLY (BARE FALLBACK)
-// ---------------------------------------------------------------------------
-
-/**
- * Every provider in auth.json gets a single placeholder model.
- * No model metadata — the user sees the provider name but all models
- * appear as "default". This is the last resort when SDK and models.dev
- * are both unavailable.
- */
-function makeBareFallback(auth: OpencodeAuth): Map<string, ProviderEntry> | null {
-  const log = (msg: string) => logger(` ${msg}`);
-  const result = new Map<string, ProviderEntry>();
-
-  for (const [providerId, credential] of Object.entries(auth)) {
-    // For known providers (Zen, Go) use hardcoded name + API URL
-    const known = KNOWN_PROVIDERS[providerId];
-    const name = known?.name ?? providerId;
-    const api = known?.api ?? undefined;
-
-    result.set(providerId, {
-      provider: { id: providerId, name, api, models: {} },
-      credential,
-      models: [['default', {
-        id: `${providerId}/default`,
-        name,
-        family: providerId,
-        capabilities: { imageInput: false, toolCalling: true },
-        version: "1.0.0",
-        maxInputTokens: 0,
-        maxOutputTokens: 0,
-        isUserSelectable: true,
-      }]],
-    });
-
-    logger(`  Included "${providerId}" (${name}) — bare fallback, 1 placeholder model`);
-  }
-
-  return result.size > 0 ? result : null;
-}
-
-// ---------------------------------------------------------------------------
-// PUBLIC ENTRY POINT
-// ---------------------------------------------------------------------------
-
-/**
- * Fallback discovery (Tiers 2 + 3) — used when the SDK is unavailable.
- * Does NOT try the SDK path; that's handled by extension.ts with server mgmt.
- */
-export async function fallbackProviders(): Promise<Map<string, ProviderEntry>> {
-  const [auth, catalog] = await Promise.all([
-    Promise.resolve().then(() => readOpencodeAuth()),
-    fetchModelsCatalogger(),
-  ]);
-  const ids = Object.keys(auth);
-  logger(` auth.json: ${ids.length} provider(s) - ${ids.join(', ') || '(none)'}`);
-
-  // Tier 2: models.dev + auth.json
-  const catalogResult = filterModelsForProviders(catalog, auth);
-  if (catalogResult) {return catalogResult;}
-
-  // Tier 3: bare fallback
-  logger(` TIER 3: bare fallback - no catalog available`);
-  const bareResult = makeBareFallback(auth);
-  if (bareResult) {return bareResult;}
-
-  logger(` No providers found.`);
-  return new Map();
 }

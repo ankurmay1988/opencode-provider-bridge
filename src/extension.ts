@@ -25,15 +25,14 @@
 
 import * as vscode from 'vscode';
 
-import { fallbackProviders, trySdkProviders } from './opencodeConfig.js';
+import { disposeServer, ensureOpencodeServer, resetServerState } from './serverManager.js';
 import { initLogger, log } from './logger.js';
 
 import { OpencodeModelProvider } from './provider.js';
 import type { ProviderEntry } from './opencodeConfig.js';
+import { trySdkProviders } from './opencodeConfig.js';
 
 const PKG_NAME = 'opencode-provider-bridge';
-const DEFAULT_PORT = 4096;
-const TERMINAL_NAME = 'opencode-bridge';
 
 /** Format a number for status bar display (e.g. 1234 → "1.2k", 12345 → "12k"). */
 function formatNum(n: number): string {
@@ -50,9 +49,9 @@ let statusBarItem: vscode.StatusBarItem;
 let extContext: vscode.ExtensionContext;
 let cachedProviders: Map<string, OpencodeModelProvider> | null = null;
 let cachedModelsList: vscode.LanguageModelChatInformation[] = [];
-let serverPort: number | null = null;
-let serverTerminal: vscode.Terminal | null = null;
 let refreshPromise: Promise<void> | null = null;
+/** Reference to the BridgeProvider instance, used by the server retry handler. */
+let bridgeProvider: BridgeProvider | null = null;
 
 // ---------------------------------------------------------------------------
 // ACTIVATION
@@ -69,6 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(statusBarItem);
 
   const provider = new BridgeProvider();
+  bridgeProvider = provider;
 
   // Register the provider immediately — VS Code sees it as available
   context.subscriptions.push(
@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(`${PKG_NAME}.refreshModels`, () => {
       cachedProviders = null;
       cachedModelsList = [];
-      serverPort = null;
+      resetServerState();
       refreshPromise = null;
       provider.fireChange();
       vscode.window.showInformationMessage('OpenCode Bridge: Refreshing…');
@@ -163,77 +163,9 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
   cachedProviders = null;
   cachedModelsList = [];
-  if (serverTerminal) {
-    serverTerminal.dispose();
-    serverTerminal = null;
-  }
-  serverPort = null;
+  bridgeProvider = null;
+  disposeServer();
   log(`deactivated`, 'info');
-}
-
-// ---------------------------------------------------------------------------
-// SERVER MANAGEMENT
-// ---------------------------------------------------------------------------
-
-async function ensureOpencodeServer(): Promise<number | null> {
-  if (serverPort) {
-    if (await isServerAlive(serverPort)) {return serverPort;}
-    log(`Cached port ${serverPort} is dead, reconnecting…`, 'info');
-    serverPort = null;
-  }
-
-  if (await isServerAlive(DEFAULT_PORT)) {
-    log(`Server found on default port ${DEFAULT_PORT}`, 'info');
-    serverPort = DEFAULT_PORT;
-    return DEFAULT_PORT;
-  }
-
-  log(`Starting headless server…`, 'info');
-  const port = await launchTerminal();
-  if (!port) {return null;}
-
-  log(`Waiting for server on port ${port}…`, 'info');
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    await sleep(300);
-    if (await isServerAlive(port)) {
-      log(`Server ready on port ${port}`, 'info');
-      serverPort = port;
-      return port;
-    }
-  }
-
-  log(`Server did not start within timeout.`, 'warn');
-  return null;
-}
-
-async function isServerAlive(port: number): Promise<boolean> {
-  try {
-    const resp = await fetch(`http://localhost:${port}/global/health`, { signal: AbortSignal.timeout(1000) });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function launchTerminal(): Promise<number | null> {
-  if (serverTerminal) {
-    serverTerminal.dispose();
-    serverTerminal = null;
-  }
-
-  const port = Math.floor(Math.random() * (65535 - 16384 + 1)) + 16384;
-  serverTerminal = vscode.window.createTerminal({
-    name: TERMINAL_NAME,
-    iconPath: new vscode.ThemeIcon('hubot'),
-    hideFromUser: true,
-  });
-  serverTerminal.sendText(`opencode serve --port ${port}`);
-  return port;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -249,11 +181,20 @@ async function getProviders(context: vscode.ExtensionContext): Promise<Map<strin
 
   let entries: Map<string, ProviderEntry>;
 
-  // Try SDK path (with server auto-start), then fallback
-  const port = await ensureOpencodeServer();
-  entries = port
-    ? (await trySdkProviders(port, 'SDK')) ?? (await fallbackProviders())
-    : await fallbackProviders();
+  // The opencode server is mandatory — SDK discovery is the only source.
+  // If the server can't be started, serverManager shows a retryable error
+  // popup; clicking "Retry" re-runs this discovery via the callback below.
+  const port = await ensureOpencodeServer(() => {
+    // User clicked "Retry" in the startup error popup — re-run discovery.
+    cachedProviders = null;
+    cachedModelsList = [];
+    refreshPromise = null;
+    resetServerState();
+    if (bridgeProvider) {
+      void refreshProviderCache(bridgeProvider);
+    }
+  });
+  entries = port ? (await trySdkProviders(port, 'SDK')) ?? new Map() : new Map();
 
   // Build provider instances
   const instances = new Map<string, OpencodeModelProvider>();
