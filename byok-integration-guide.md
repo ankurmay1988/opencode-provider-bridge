@@ -425,7 +425,7 @@ The `opencode-provider-bridge` extension has been verified against VS Code's off
 
 | Aspect | Official BYOK Providers | OpenCode Bridge |
 |---|---|---|
-| **HTTP layer** | Manual SSE parsing + `ChatEndpoint` | `@ai-sdk/openai-compatible` (bundled SDK) |
+| **HTTP layer** | Manual SSE parsing + `ChatEndpoint` | Multi-SDK auto-routing (`@ai-sdk/openai`, `@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) |
 | **Stream abstraction** | Raw `chunk.type` switch on Anthropic stream events | SDK `fullStream` normalized events |
 | **Tool schema handling** | Server-side known model capabilities | Client-side `simplifySchema()` with caching |
 | **Error classification** | `ChatFetchResponseType` enum | `statusCode` + message pattern matching |

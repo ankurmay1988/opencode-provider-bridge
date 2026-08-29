@@ -10,15 +10,18 @@ Any provider you've configured in OpenCode — Zen, Go, Anthropic, OpenAI, Googl
 2. **Configure** providers in OpenCode: `opencode /connect`
 3. **Open** VS Code Chat → select a model from the dropdown
 
-That's it. Providers are auto-discovered from a running `opencode serve` or your local `auth.json` file.
+That's it. Providers are auto-discovered from a running `opencode serve` — the extension starts one automatically if needed.
 
 ## Features
 
 - **All providers, one picker** — Zen, Go, Anthropic, OpenAI, Google, and any other OpenCode provider
-- **Multi-SDK auto-routing** — uses the correct AI SDK per model (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) based on opencode registry metadata
+- **Multi-SDK auto-routing** — uses the correct AI SDK per model (`@ai-sdk/openai`, `@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) based on opencode registry metadata
 - **Zero config** — reads your existing OpenCode setup
 - **Secure keys** — API keys stored in VS Code's encrypted SecretStorage
 - **Real-time reasoning** — thinking content streams as it's generated
+- **Model configuration** — per-model controls in the model picker: "Thinking Effort" (from opencode's per-model variants), "Context Size", "Temperature", and "Max Output Tokens"; selections are sent with each request
+- **Cost display** — per-model cost shown in AI credits (converted from opencode's USD pricing)
+- **Server auto-start** — starts `opencode serve` headlessly when needed, with a retryable setup popup
 - **Token usage** — status bar shows prompt/completion tokens per response
 - **Tool calling** — full support for tools with schema simplification and cross-turn name resolution
 - **Debug logging** — set `logLevel` to `debug` to see raw SSE stream data, routing decisions, and request payloads
@@ -27,6 +30,7 @@ That's it. Providers are auto-discovered from a running `opencode serve` or your
 
 - VS Code **1.120+**
 - [OpenCode CLI](https://opencode.ai) installed and configured (`opencode /connect`)
+- A running opencode server is **required** — the extension auto-starts `opencode serve` if none is running
 
 ## Commands
 
@@ -47,9 +51,10 @@ That's it. Providers are auto-discovered from a running `opencode serve` or your
 
 | File | Purpose |
 |------|---------|
-| `extension.ts` | Extension entry point, server management, BridgeProvider |
-| `provider.ts` | OpencodeModelProvider — multi-SDK routing, message conversion, streaming |
-| `opencodeConfig.ts` | 3-tier provider/model discovery (SDK → catalog → bare fallback) |
+| `extension.ts` | Extension entry point, BridgeProvider, provider discovery/caching |
+| `serverManager.ts` | opencode server lifecycle (find/start, health check, retryable error popup) |
+| `provider.ts` | OpencodeModelProvider — multi-SDK routing, message conversion, streaming, model config |
+| `opencodeConfig.ts` | SDK-only provider/model discovery (mandatory opencode server) |
 | `providerUtils.ts` | Schema simplification, tool result text extraction |
 | `verboseFetch.ts` | SSE stream logging fetch wrapper (debug level) |
 | `logger.ts` | Leveled logging with VS Code OutputChannel |

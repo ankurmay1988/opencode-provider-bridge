@@ -4,6 +4,23 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.6.1] - 2026-08-29
+
+### Added
+- Model configuration: per-model Thinking Effort (from opencode variants), Context Size, Temperature, and Max Output Tokens, forwarded per SDK
+- Cost display in AI credits (1 credit = $0.01) plus human-readable pricing label
+- Retryable server startup popup with **Retry** and **Get OpenCode** actions
+- Tool-call arguments normalization fixing `[400] function.arguments must be a JSON object`
+
+### Changed
+- SDK-only discovery: removed models.dev + auth.json fallback; opencode server is mandatory
+- Server lifecycle extracted to `serverManager.ts` (health-first, headless serve, CLI check)
+- DeepSeek reasoning gate: `reasoning_content` injection restricted to DeepSeek models
+
+### Fixed
+- Context Size default now uses the model's cost-tier context size (e.g. 272K for gpt-5.4) instead of context − output
+- OpenAI-native models (apiNpm `@ai-sdk/openai`, e.g. gpt-5.6-luna) now route through the real `@ai-sdk/openai` SDK — openai-compatible was rejected by Zen with a 500
+
 ## [0.5.0] - 2026-05-15
 
 ### Added

@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 
 import type { ModelMessage, ToolSet } from 'ai';
-import { ModelsDevModel, ModelsDevProvider } from './opencodeConfig.js';
+import { defaultEffort, ModelsDevModel, ModelsDevProvider, type ReasoningVariant } from './opencodeConfig.js';
 import { extractTextFromToolResult, simplifySchema } from './providerUtils.js';
 import { jsonSchema, streamText, tool } from 'ai';
 
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
@@ -64,8 +65,11 @@ export class OpencodeModelProvider
 
   lastUsage: { prompt: number; completion: number } | null = null;
 
-  /** OpenAI-compatible provider instance (for models returning OpenAI SSE). */
-  private openaiProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+  /** OpenAI SDK provider instance (for models with api.npm = "@ai-sdk/openai"). */
+  private openaiProvider: ReturnType<typeof createOpenAI> | null = null;
+
+  /** OpenAI-compatible provider instance (for models with api.npm = "@ai-sdk/openai-compatible"). */
+  private openaiCompatibleProvider: ReturnType<typeof createOpenAICompatible> | null = null;
 
   /** Anthropic provider instance (for models returning Anthropic SSE, e.g. Qwen). */
   private anthropicProvider: ReturnType<typeof createAnthropic> | null = null;
@@ -98,6 +102,7 @@ export class OpencodeModelProvider
   setApiKey(key: string): void {
     this.apiKey = key;
     this.openaiProvider = null;
+    this.openaiCompatibleProvider = null;
     this.anthropicProvider = null;
     this.googleProvider = null;
   }
@@ -121,10 +126,12 @@ export class OpencodeModelProvider
    * the opencode provider registry.
    *
    * The opencode SDK returns per-model metadata that tells us exactly
-   * which AI SDK package to use (e.g. `@ai-sdk/openai-compatible`,
-   * `@ai-sdk/anthropic`, `@ai-sdk/google`). This is the authoritative
-   * source of truth:
+   * which AI SDK package to use (e.g. `@ai-sdk/openai`,
+   * `@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`).
+   * This is the authoritative source of truth:
    *
+   *   @ai-sdk/openai             → sends OpenAI-format requests
+   *                                 to /v1/chat/completions
    *   @ai-sdk/openai-compatible  → sends OpenAI-format requests
    *                                 to /v1/chat/completions
    *   @ai-sdk/anthropic          → sends Anthropic-format requests
@@ -187,17 +194,134 @@ export class OpencodeModelProvider
       return this.anthropicProvider(modelId);
     }
 
+    if (apiNpm === '@ai-sdk/openai') {
+      // Real OpenAI SDK — required for OpenAI-native models (e.g. gpt-5.6-luna).
+      // openai-compatible hits the same URL but the Zen API rejects its request
+      // shape with a 500, so these models MUST use @ai-sdk/openai.
+      log(`[opencode-provider-bridge] ROUTE → OpenAI SDK (@ ${baseUrl})`, 'debug');
+      if (!this.openaiProvider) {
+        this.openaiProvider = createOpenAI({
+          name: this.providerInfo.id,
+          baseURL: baseUrl,
+          apiKey: this.apiKey,
+          fetch: VERBOSE_FETCH,
+        });
+      }
+      return this.openaiProvider(modelId);
+    }
+
     // Default: OpenAI-compatible (for @ai-sdk/openai-compatible or when apiNpm is unknown)
     log(`[opencode-provider-bridge] ROUTE → OpenAI-compatible SDK (@ ${baseUrl})`, 'debug');
-    if (!this.openaiProvider) {
-      this.openaiProvider = createOpenAICompatible({
+    if (!this.openaiCompatibleProvider) {
+      this.openaiCompatibleProvider = createOpenAICompatible({
         name: this.providerInfo.id,
         baseURL: baseUrl,
         apiKey: this.apiKey,
         fetch: VERBOSE_FETCH,
       });
     }
-    return this.openaiProvider(modelId);
+    return this.openaiCompatibleProvider(modelId);
+  }
+
+  /**
+   * Maps the user's reasoning-effort selection (from the model picker's
+   * "Thinking Effort" control) to the provider-specific AI SDK option.
+   *
+   * The value arrives via `options.modelConfiguration.reasoningEffort` and is
+   * forwarded as call-level `providerOptions` to `streamText`. Each SDK uses a
+   * different key:
+   *   - @ai-sdk/openai            → `openai` (variant spread 1:1)
+   *   - @ai-sdk/openai-compatible → `openaiCompatible` (variant spread 1:1)
+   *   - @ai-sdk/anthropic         → `anthropic` (variant spread 1:1)
+   *   - @ai-sdk/google            → `google` (variant spread 1:1)
+   *
+   * When the model declares `variants`, only those exact effort values are
+   * valid; an out-of-range selection (e.g. a stale "medium" from a previous
+   * session) is coerced to a valid default. Returns undefined when no effort
+   * is configured, the model doesn't support reasoning, or the model declares
+   * no variants (no Copilot-standard fallback).
+   */
+  private buildReasoningProviderOptions(
+    modelId: string,
+    reasoningEffort: string | undefined,
+  ) {
+    if (!reasoningEffort) {return undefined;}
+    const modelMeta = this.enabledModels.get(modelId);
+    if (modelMeta?.reasoning !== true) {return undefined;}
+
+    // Only models that declare opencode `variants` get reasoning options.
+    // No Copilot-standard low/medium/high fallback: if opencode doesn't
+    // declare variants, we don't send any reasoning parameter.
+    const variants = modelMeta?.reasoningVariants;
+    if (!variants || Object.keys(variants).length === 0) {
+      return undefined;
+    }
+
+    const keys = Object.keys(variants);
+    const valid = keys.includes(reasoningEffort) ? reasoningEffort : defaultEffort(keys);
+    if (valid !== reasoningEffort) {
+      log(`[opencode-provider-bridge] MODEL_CONFIG reasoningEffort="${reasoningEffort}" not supported by ${modelId} (${keys.join('/')}); using "${valid}"`, 'warn');
+    }
+
+    return this.reasoningOptionsFor(modelMeta.apiNpm ?? '', variants[valid]);
+  }
+
+  /**
+   * Passes an opencode reasoning variant through to the model's AI SDK as
+   * provider options. opencode's variant values are already in the exact
+   * shape of the AI SDK provider options (opencode uses the same SDKs
+   * internally), so no translation is needed — we spread them 1:1.
+   */
+  private reasoningOptionsFor(apiNpm: string, variant: ReasoningVariant) {
+    if (apiNpm === '@ai-sdk/anthropic') {
+      return { anthropic: { ...variant } };
+    }
+    if (apiNpm === '@ai-sdk/google') {
+      return { google: { ...variant } };
+    }
+    if (apiNpm === '@ai-sdk/openai') {
+      // Real OpenAI SDK: `reasoningEffort` maps to reasoning_effort; the SDK
+      // handles reasoningSummary/include for the responses API and drops
+      // unknown keys for the chat API (matching opencode's own behavior).
+      return { openai: { ...variant } };
+    }
+    // Default: OpenAI-compatible (also covers unknown apiNpm). Unknown keys
+    // (e.g. `thinking`) are spread into the request body by the SDK.
+    return { openaiCompatible: { ...variant } };
+  }
+
+  /**
+   * Builds the call-level `providerOptions` for a request from the user's
+   * model configuration: reasoning variants plus (best-effort) context size.
+   *
+   * The context size is forwarded as a provider option only when the user
+   * explicitly picks a smaller-than-full window (the default full window is
+   * the model's native behavior and needs no request param). openai-compatible
+   * spreads unknown keys into the request body, so it reaches the upstream if
+   * supported; anthropic/google/openai use strict schemas with no clean
+   * context-size param, so it is skipped there.
+   */
+  private buildProviderOptions(
+    modelId: string,
+    reasoningEffort: string | undefined,
+    contextSize: number | undefined,
+  ) {
+    const options: Record<string, any> = this.buildReasoningProviderOptions(modelId, reasoningEffort) ?? {};
+
+    if (contextSize !== undefined && Number.isFinite(contextSize) && contextSize > 0) {
+      const modelMeta = this.enabledModels.get(modelId);
+      const apiNpm = modelMeta?.apiNpm ?? '';
+      const fullContext = modelMeta?.maxInputTokens;
+      if (fullContext !== undefined && contextSize >= fullContext) {
+        log(`[opencode-provider-bridge] MODEL_CONFIG contextSize=${contextSize} is the full window; not forwarding`, 'debug');
+      } else if (apiNpm === '@ai-sdk/anthropic' || apiNpm === '@ai-sdk/google' || apiNpm === '@ai-sdk/openai') {
+        log(`[opencode-provider-bridge] MODEL_CONFIG contextSize=${contextSize} not supported by ${apiNpm}; skipping`, 'warn');
+      } else {
+        options.openaiCompatible = { ...(options.openaiCompatible ?? {}), contextSize };
+      }
+    }
+
+    return Object.keys(options).length > 0 ? options : undefined;
   }
 
   provideLanguageModelChatInformation(
@@ -227,6 +351,23 @@ export class OpencodeModelProvider
     let reasoningEnded = false;
 
     const modelMeta = this.enabledModels.get(model.id);
+    // User's model configuration from the model picker (if any).
+    const reasoningEffort = options.modelConfiguration?.reasoningEffort as string | undefined;
+    const temperature = options.modelConfiguration?.temperature as number | undefined;
+    const maxOutputTokens = options.modelConfiguration?.maxOutputTokens as number | undefined;
+    const contextSize = options.modelConfiguration?.contextSize as number | undefined;
+    if (reasoningEffort) {
+      log(`[opencode-provider-bridge] MODEL_CONFIG reasoningEffort="${reasoningEffort}" model=${model.id}`, 'debug');
+    }
+    if (temperature !== undefined) {
+      log(`[opencode-provider-bridge] MODEL_CONFIG temperature=${temperature} model=${model.id}`, 'debug');
+    }
+    if (maxOutputTokens !== undefined) {
+      log(`[opencode-provider-bridge] MODEL_CONFIG maxOutputTokens=${maxOutputTokens} model=${model.id}`, 'debug');
+    }
+    if (contextSize !== undefined) {
+      log(`[opencode-provider-bridge] MODEL_CONFIG contextSize=${contextSize} model=${model.id}`, 'debug');
+    }
     // DeepSeek thinking APIs require reasoning_content on every replayed
     // assistant message (including VS Code's synthetic tool-call history).
     // Only DeepSeek models are affected: Anthropic, Gemini, GPT, Grok,
@@ -282,6 +423,7 @@ export class OpencodeModelProvider
       : 'auto';
 
     const languageModel = this.getLanguageModel(model.id);
+    const providerOptions = this.buildProviderOptions(model.id, reasoningEffort, contextSize);
 
     log(`[opencode-provider-bridge] Calling streamText model=${model.id} tools=${Object.keys(tools).length}`, 'info');
 
@@ -297,6 +439,11 @@ export class OpencodeModelProvider
         tools: Object.keys(tools).length > 0 ? tools : undefined,
         toolChoice: Object.keys(tools).length > 0 ? toolChoice : undefined,
         abortSignal: abortController.signal,
+        ...(temperature !== undefined ? { temperature } : {}),
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        // Values are JSON-serializable (strings + nested objects); the cast
+        // satisfies SharedV3ProviderOptions' JSONObject index signature.
+        ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
       });
 
       let hasText = false;

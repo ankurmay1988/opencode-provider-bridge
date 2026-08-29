@@ -32,6 +32,38 @@ export interface ProviderCredential {
   access?: string;
 }
 
+/**
+ * A single reasoning variant from the opencode server's `Model.variants`.
+ *
+ * The SDK's `Model` type is stale and doesn't declare `variants`, so we model
+ * the shapes observed from the live server. Each value is already in the exact
+ * shape of the AI SDK provider options for the model's SDK (`api.npm`):
+ *   { reasoningEffort: "low" }                                  → openai-compatible
+ *   { reasoningEffort: "low", reasoningSummary: "auto", ... }   → openai-compatible
+ *   { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } → google
+ *   { thinking: { type: "adaptive", display: "summarized" }, effort: "high" } → anthropic
+ *   { thinking: { type: "enabled", budgetTokens: 16000 } }      → anthropic
+ *   { thinking: { type: "disabled" } }                          → openai-compatible (minimax)
+ */
+export type ReasoningVariant = {
+  reasoningEffort?: string;
+  reasoningSummary?: string;
+  include?: string[];
+  effort?: string;
+  thinking?: {
+    type: string;
+    display?: string;
+    budgetTokens?: number;
+  };
+  thinkingConfig?: {
+    includeThoughts?: boolean;
+    thinkingLevel?: string;
+  };
+};
+
+/** Per-model reasoning variants keyed by the effort value they represent. */
+export type ReasoningVariants = Record<string, ReasoningVariant>;
+
 export interface ModelsDevModel extends vscode.LanguageModelChatInformation {
   family: string;
   /** Exact API base URL from opencode's model registry (SDK Model.api.url). */
@@ -39,6 +71,15 @@ export interface ModelsDevModel extends vscode.LanguageModelChatInformation {
   /** npm package from opencode's model registry (e.g. @ai-sdk/openai-compatible). */
   apiNpm?: string;
   reasoning?: boolean;
+  /** Whether the model supports a temperature parameter. */
+  temperature?: boolean;
+  /**
+   * Per-model reasoning variants from the opencode server (`Model.variants`).
+   * Keys are the valid "Thinking Effort" choices for this model; each value
+   * holds the exact AI SDK provider options to send. Absent → the model has
+   * no reasoning control (no Copilot-standard fallback).
+   */
+  reasoningVariants?: ReasoningVariants;
 }
 
 export interface ModelsDevProvider {
@@ -102,6 +143,158 @@ function formatUsdPerM(usd: number | undefined): string | undefined {
 // SDK-TO-LOCAL TYPE MAPPERS
 // ---------------------------------------------------------------------------
 
+/** Human-readable label for a reasoning-effort value. */
+function effortLabel(value: string): string {
+  const labels: Record<string, string> = {
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    max: 'Max',
+    xhigh: 'Extra High',
+    minimal: 'Minimal',
+    none: 'None',
+    thinking: 'Thinking',
+  };
+  return labels[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Short description for a reasoning-effort value. */
+function effortDescription(value: string): string {
+  const descriptions: Record<string, string> = {
+    low: 'Faster responses with less reasoning',
+    medium: 'Balanced reasoning and speed',
+    high: 'Greater reasoning depth but slower',
+    max: 'Maximum reasoning depth, slowest responses',
+    xhigh: 'Extra-high reasoning depth',
+    minimal: 'Minimal reasoning, fastest responses',
+    none: 'Thinking disabled',
+    thinking: 'Adaptive thinking enabled',
+  };
+  return descriptions[value] ?? `Reasoning effort: ${value}`;
+}
+
+/**
+ * Picks a safe default effort from a model's supported variants:
+ * prefer `medium`, else the first non-`none` variant, else the first variant.
+ */
+export function defaultEffort(variants: string[]): string {
+  if (variants.includes('medium')) {return 'medium';}
+  const firstEnabled = variants.find((v) => v !== 'none');
+  return firstEnabled ?? variants[0];
+}
+
+/** Formats a token count for display, e.g. 131072 → "131K", 1000000 → "1M". */
+function formatTokenCount(count: number): string {
+  if (count >= 1_000_000) {
+    const m = count / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
+  }
+  if (count >= 1_000) {
+    const k = count / 1_000;
+    return `${k >= 10 ? Math.round(k) : k.toFixed(1)}K`;
+  }
+  return String(count);
+}
+
+/**
+ * Extracts the model's recommended default context size from its cost tiers.
+ *
+ * opencode reports a `cost.tiers` array (not in the stale SDK `Model` type —
+ * read via cast) where an entry with `tier.type === "context"` carries the
+ * model's default context window in `tier.size` (e.g. 272K for gpt-5.4 whose
+ * full window is 1M). This is the correct "Default" context size for the UI —
+ * NOT `context - output`, which overstates it.
+ */
+function defaultContextTokens(model: Model): number | undefined {
+  const tiers = (model.cost as { tiers?: Array<{ tier?: { type?: string; size?: number } }> }).tiers;
+  const contextTier = tiers?.find((t) => t.tier?.type === 'context');
+  const size = contextTier?.tier?.size;
+  return size !== undefined && Number.isFinite(size) && size > 0 ? size : undefined;
+}
+
+/**
+ * Builds the VS Code `configurationSchema` for a model.
+ *
+ * VS Code renders two groups in the chat-input model picker:
+ *   - `navigation` → "Thinking Effort" (from opencode `variants`)
+ *   - `tokens`     → "Context Size" (default from the model's cost tier vs
+ *                    the full context window)
+ * Additional enum properties (temperature, max output tokens) appear as
+ * submenus in the Manage Models → Configure menu.
+ *
+ * The opencode server declares per-model `variants` listing the exact effort
+ * values a model accepts (e.g. GLM-5.3-Flash only supports `low`/`high`/`max`).
+ * We advertise exactly those values — there is no Copilot-standard fallback.
+ * The default must never be `undefined` or the picker shows an "undefined" state.
+ */
+function buildModelConfigSchema(
+  variantKeys: string[],
+  contextTokens: number | undefined,
+  outputTokens: number | undefined,
+  defaultContextTokens: number | undefined,
+  supportsTemperature: boolean,
+): vscode.LanguageModelConfigurationSchema | undefined {
+  const properties: Record<string, Record<string, unknown>> = {};
+
+  // Thinking Effort (navigation group) — from opencode variants.
+  if (variantKeys.length > 0) {
+    properties.reasoningEffort = {
+      type: 'string',
+      title: 'Thinking Effort',
+      enum: variantKeys,
+      enumItemLabels: variantKeys.map(effortLabel),
+      enumDescriptions: variantKeys.map(effortDescription),
+      default: defaultEffort(variantKeys),
+      group: 'navigation',
+    };
+  }
+
+  // Context Size (tokens group) — default prompt budget vs full window.
+  // The default is the model's recommended context size from its cost tier
+  // (tier.type === "context"); fall back to context - output when no tier is
+  // declared and the window is larger than the output budget.
+  const defaultContext = defaultContextTokens
+    ?? (contextTokens && outputTokens && contextTokens > outputTokens ? contextTokens - outputTokens : undefined);
+  if (contextTokens && defaultContext && defaultContext < contextTokens) {
+    properties.contextSize = {
+      type: 'number',
+      title: 'Context Size',
+      enum: [defaultContext, contextTokens],
+      enumItemLabels: [formatTokenCount(defaultContext), formatTokenCount(contextTokens)],
+      enumDescriptions: ['Default recommended context size', 'Full context window'],
+      default: contextTokens,
+      group: 'tokens',
+    };
+  }
+
+  // Temperature — for models that support it.
+  if (supportsTemperature) {
+    properties.temperature = {
+      type: 'number',
+      title: 'Temperature',
+      enum: [0, 0.5, 1, 1.5, 2],
+      enumItemLabels: ['0', '0.5', '1', '1.5', '2'],
+      enumDescriptions: ['Deterministic', 'Focused', 'Balanced', 'Creative', 'Very creative'],
+      default: 1,
+    };
+  }
+
+  // Max Output Tokens — from the model's output budget.
+  if (outputTokens) {
+    const half = Math.floor(outputTokens / 2);
+    properties.maxOutputTokens = {
+      type: 'number',
+      title: 'Max Output Tokens',
+      enum: [half, outputTokens],
+      enumItemLabels: [formatTokenCount(half), formatTokenCount(outputTokens)],
+      enumDescriptions: ['Half the model maximum', 'Full model maximum'],
+      default: outputTokens,
+    };
+  }
+
+  return Object.keys(properties).length > 0 ? { properties } : undefined;
+}
+
 function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
   // opencode reports cost in USD per 1M tokens; VS Code expects AI credits
   // per 1M tokens (1 credit = $0.01). Convert, and keep a dollar label too.
@@ -120,6 +313,23 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
   if (inLabel) {pricingParts.push(`In: ${inLabel}`);}
   if (outLabel) {pricingParts.push(`Out: ${outLabel}`);}
 
+  // The SDK's Model type is stale: the live server also returns `variants`
+  // (per-model reasoning effort choices) and `capabilities.interleaved`.
+  const variants = (model as { variants?: ReasoningVariants }).variants;
+  const hasDeclaredVariants = !!variants && Object.keys(variants).length > 0;
+
+  // Build the model configuration schema: Thinking Effort (from variants),
+  // Context Size (from the context window), Temperature, and Max Output
+  // Tokens. VS Code renders the navigation/tokens groups in the chat-input
+  // model picker; other enum properties appear in Manage Models → Configure.
+  const configurationSchema = buildModelConfigSchema(
+    hasDeclaredVariants ? Object.keys(variants) : [],
+    model.limit?.context,
+    model.limit?.output,
+    defaultContextTokens(model),
+    model.capabilities.temperature,
+  );
+
   return {
     id: `${model.providerID}/${model.id}`,
     name: `${sp.name} - ${model.name}`,
@@ -135,6 +345,9 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
       toolCalling: model.capabilities.toolcall,
     },
     reasoning: model.capabilities.reasoning,
+    configurationSchema,
+    reasoningVariants: hasDeclaredVariants ? variants : undefined,
+    temperature: model.capabilities.temperature,
     version: "1.0.0",
     pricing: pricingParts.length > 0 ? pricingParts.join(' · ') : undefined,
     cacheCost: usdToCredits(cacheReadUsd),

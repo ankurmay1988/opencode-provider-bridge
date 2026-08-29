@@ -4,9 +4,9 @@ Catalog of every model parameter supported by the installed `@ai-sdk/**` package
 for integrating model configuration (reasoning effort, thinking, temperature, etc.)
 into the OpenCode Provider Bridge.
 
-Installed packages: `@ai-sdk/provider`, `@ai-sdk/openai-compatible`,
-`@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/gateway`, `@ai-sdk/provider-utils`,
-plus the `ai` core.
+Installed packages: `@ai-sdk/provider`, `@ai-sdk/openai`,
+`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`,
+`@ai-sdk/gateway`, `@ai-sdk/provider-utils`, plus the `ai` core.
 
 ---
 
@@ -43,6 +43,26 @@ top-level `streamText` options onto them):
 | `reasoningEffort` | `string` | `reasoning_effort` |
 | `textVerbosity` | `string` | `verbosity` |
 | `strictJsonSchema` | `boolean` | (structured output) |
+
+---
+
+## 2b. `@ai-sdk/openai` — `providerOptions.openai`
+
+| Option | Type | Wire field |
+|---|---|---|
+| `reasoningEffort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | `reasoning_effort` (chat) / `reasoning.effort` (responses) |
+| `reasoningSummary` | `string` | `reasoning.summary` (responses) |
+| `maxCompletionTokens` | `number` | `max_completion_tokens` |
+| `store` | `boolean` | `store` |
+| `metadata` | `Record<string,string>` | `metadata` |
+| `user` | `string` | `user` |
+| `parallelToolCalls` | `boolean` | `parallel_tool_calls` |
+| `logitBias` | `Record<string,number>` | `logit_bias` |
+| `logprobs` | `boolean \| number` | `logprobs` / `top_logprobs` |
+| `textVerbosity` | `string` | `verbosity` |
+
+Note: `@ai-sdk/openai` uses a strict zod schema — unknown provider options are
+**dropped**, not spread into the body (unlike `@ai-sdk/openai-compatible`).
 
 ---
 
@@ -129,15 +149,24 @@ top-level `streamText` options onto them):
 
 ---
 
-## Integration mapping — reasoning effort across providers
+## Integration mapping — model configuration across providers
 
-VS Code's `modelConfiguration.reasoningEffort` uses `'low' | 'medium' | 'high'`.
-Map it to each SDK:
+The opencode server returns per-model `variants` whose keys are the exact
+"Thinking Effort" choices a model accepts (e.g. GLM-5.3-Flash = `low`/`high`/`max`;
+kimi-k3 = `max`; gemini = `minimal`/`low`/`medium`/`high`). Each variant value is
+already in the AI SDK provider-option shape, so the extension spreads it 1:1:
 
-| VS Code value | openai-compatible | anthropic | google |
-|---|---|---|---|
-| `low` | `reasoningEffort: 'low'` | `effort: 'low'` | `thinkingConfig.thinkingLevel: 'low'` |
-| `medium` | `reasoningEffort: 'medium'` | `effort: 'medium'` | `thinkingConfig.thinkingLevel: 'medium'` |
-| `high` | `reasoningEffort: 'high'` | `effort: 'high'` | `thinkingConfig.thinkingLevel: 'high'` |
+| Variant value shape | SDK providerOptions |
+|---|---|
+| `{ reasoningEffort: "low" }` | `openaiCompatible.reasoningEffort` → `reasoning_effort` |
+| `{ reasoningEffort: "low", reasoningSummary: "auto", include: [...] }` (apiNpm `@ai-sdk/openai`) | `openai.reasoningEffort` → `reasoning_effort`; `reasoningSummary`/`include` handled by the SDK (responses) |
+| `{ reasoningEffort: "low", reasoningSummary: "auto", include: [...] }` (apiNpm `@ai-sdk/openai-compatible`) | `openaiCompatible` (extra keys spread into body) |
+| `{ thinkingConfig: { includeThoughts, thinkingLevel } }` | `google.thinkingConfig` |
+| `{ thinking: { type: "adaptive", display: "summarized" }, effort: "high" }` | `anthropic.thinking` + `anthropic.effort` |
+| `{ thinking: { type: "enabled", budgetTokens } }` | `anthropic.thinking` |
+| `{ thinking: { type: "disabled" } }` | `openaiCompatible` (spread into body) |
 
-Anthropic also supports `xhigh`/`max`; Google also supports `minimal`.
+Additional controls: `contextSize` (tokens group, forwarded as
+`openaiCompatible.contextSize` when smaller than full; skipped for
+anthropic/google/openai), `temperature` and `maxOutputTokens` (top-level
+`streamText` options).

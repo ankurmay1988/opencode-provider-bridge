@@ -2,7 +2,7 @@
 
 A VS Code extension that brings all [opencode](https://opencode.ai)-configured AI providers (Anthropic, OpenAI, Google, NVIDIA, Vultr, Zen, Go, etc.) into VS Code's Chat model picker so you can use them alongside GitHub Copilot or as your primary chat models.
 
-Uses multiple Vercel AI SDK packages (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) under the hood, automatically selecting the correct SDK per model based on the opencode provider registry metadata (`apiNpm`).
+Uses multiple Vercel AI SDK packages (`@ai-sdk/openai`, `@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`, `@ai-sdk/google`) under the hood, automatically selecting the correct SDK per model based on the opencode provider registry metadata (`apiNpm`).
 
 ```mermaid
 flowchart TB
@@ -39,7 +39,8 @@ flowchart TB
 
     subgraph Execution["AI SDK (bundled)"]
         direction TB
-        oai["@ai-sdk/openai-compatible<br/>createOpenAICompatible()<br/>→ /chat/completions"]
+        oai["@ai-sdk/openai<br/>createOpenAI()<br/>→ /chat/completions"]
+        oaic["@ai-sdk/openai-compatible<br/>createOpenAICompatible()<br/>→ /chat/completions"]
         anth["@ai-sdk/anthropic<br/>createAnthropic()<br/>→ /messages"]
         google["@ai-sdk/google<br/>createGoogleGenerativeAI()<br/>→ /models/{model}"]
         ai["ai SDK<br/>streamText() + tool() + jsonSchema()"]
@@ -51,9 +52,11 @@ flowchart TB
 
     config --> sdk
     prov --> oai
+    prov --> oaic
     prov --> anth
     prov --> google
     oai --> ai
+    oaic --> ai
     anth --> ai
     google --> ai
 ```
@@ -71,7 +74,7 @@ The extension manifest tells VS Code about our extension:
 | `contributes.languageModelChatProviders` | Registers vendor ID `"opencode-provider-bridge"` with `configuration` schema for Manage Models dialog |
 | `contributes.configuration` | `logLevel` setting (`error`/`warn`/`info`/`debug`) |
 | `contributes.commands` | 4 commands: refresh, status, set key, remove key |
-| `dependencies` | `@ai-sdk/openai-compatible`, `@opencode-ai/sdk`, `ai` |
+| `dependencies` | `@ai-sdk/openai`, `@ai-sdk/openai-compatible`, `@opencode-ai/sdk`, `ai` |
 
 The `languageModelChatProviders` contribution includes a `configuration` schema with an `apiKey` (string, `secret: true`) property. This drives VS Code's **Manage Models** dialog, allowing users to configure API keys through the native UI.
 
@@ -169,13 +172,14 @@ The opencode server is the single source of truth. `trySdkProviders(port?)` call
 ## 5. Per-Provider Implementation — `src/provider.ts`
 
 Each opencode-configured provider gets its own `OpencodeModelProvider` instance.
-Uses multiple AI SDK packages (`@ai-sdk/openai-compatible`, `@ai-sdk/anthropic`,
-`@ai-sdk/google`) with auto-routing via `getLanguageModel()` based on per-model
-`apiNpm` metadata from the opencode provider registry.
+Uses multiple AI SDK packages (`@ai-sdk/openai`, `@ai-sdk/openai-compatible`,
+`@ai-sdk/anthropic`, `@ai-sdk/google`) with auto-routing via `getLanguageModel()`
+based on per-model `apiNpm` metadata from the opencode provider registry.
 
 ### Dependencies
 
 ```typescript
+import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -190,6 +194,7 @@ Routes each model to the correct AI SDK based on `apiNpm` from opencode registry
 
 | `apiNpm` | SDK | Auth Header | Endpoint |
 |---|---|---|---|
+| `@ai-sdk/openai` | `createOpenAI()` | `Authorization: Bearer` | `/chat/completions` |
 | `@ai-sdk/openai-compatible` | `createOpenAICompatible()` | `Authorization: Bearer` | `/chat/completions` |
 | `@ai-sdk/anthropic` | `createAnthropic()` | `Authorization: Bearer` | `/messages` |
 | `@ai-sdk/google` | `createGoogleGenerativeAI()` | `x-goog-api-key` | `/models/{modelId}` |
@@ -205,6 +210,30 @@ All providers are re-created when `setApiKey()` is called.
 3. **Build tools**: VS Code `LanguageModelChatTool[]` → AI SDK `ToolSet` via `tool({ inputSchema: jsonSchema(params) })`. Tool schemas are **cached** by name in `toolSchemaCache` to avoid re-simplification.
 4. **Stream**: `streamText({ model: languageModel, messages, tools, toolChoice })` — SDK manages HTTP, streaming, tool call accumulation
 5. **Emit parts**: Iterate `fullStream` and map each event to the corresponding VS Code response part
+
+### Model Configuration
+
+Models advertise a `configurationSchema` (built in `opencodeConfig.ts`:
+`buildModelConfigSchema()`) with up to four controls:
+
+| Property | Group | Source | Default |
+|---|---|---|---|
+| `reasoningEffort` (Thinking Effort) | `navigation` | opencode per-model `variants` keys | `defaultEffort()` (medium if present, else first non-none) |
+| `contextSize` (Context Size) | `tokens` | `cost.tiers` context tier (default), `limit.context` (full) | full context |
+| `temperature` | — | only if `capabilities.temperature` | 1 |
+| `maxOutputTokens` | — | `limit.output` (half, full) | full |
+
+VS Code renders the `navigation`/`tokens` groups in the chat-input model picker;
+the other enum properties appear in Manage Models → Configure. The user's picks
+arrive in `provideLanguageModelChatResponse` as `options.modelConfiguration.*`
+and are forwarded by `buildProviderOptions()`:
+
+- **Reasoning**: the selected opencode `variant` value is spread 1:1 into the
+  SDK's provider options (`openaiCompatible`/`anthropic`/`google`) — opencode
+  uses the same AI SDKs internally, so no translation is needed.
+- **Context size**: forwarded as `openaiCompatible.contextSize` only when a
+  smaller-than-full window is picked; skipped for anthropic/google.
+- **Temperature / Max Output Tokens**: forwarded as top-level `streamText` options.
 
 ### Tool Name Resolution
 
@@ -428,6 +457,7 @@ request text, or API keys.
 | Package | Role |
 |---|---|
 | `@opencode-ai/sdk` v1.14+ | OpenCode client SDK for provider discovery |
+| `@ai-sdk/openai` v3.0+ | OpenAI-native HTTP provider (GPT models — required; openai-compatible is rejected by Zen with a 500) |
 | `@ai-sdk/openai-compatible` v2.0+ | OpenAI-compatible HTTP provider (message conversion, tool formatting, streaming) |
 | `ai` v6.0+ | AI SDK core (`streamText`, `tool`, `jsonSchema`) |
 | `@types/vscode` | VS Code API types |
@@ -447,6 +477,6 @@ opencode-provider-bridge/
     ├── extension.ts       — Entry point, activation, BridgeProvider, key management
     ├── serverManager.ts   — opencode server lifecycle (find/start CLI, health check, popup)
     ├── opencodeConfig.ts  — SDK-only provider discovery (mandatory opencode server)
-    ├── provider.ts        — Per-provider API calls via @ai-sdk/openai-compatible + streamText
+    ├── provider.ts        — Per-provider API calls via @ai-sdk/openai + @ai-sdk/openai-compatible + streamText
     └── logger.ts          — Verbosity-gated logging (error/warn/info/debug)
 ```
