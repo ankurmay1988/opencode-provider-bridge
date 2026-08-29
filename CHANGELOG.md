@@ -4,7 +4,7 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.6.1] - 2026-08-29
+## [0.7.0] - 2026-08-29
 
 ### Added
 - Model configuration: per-model Thinking Effort (from opencode variants), Context Size, Temperature, and Max Output Tokens, forwarded per SDK
