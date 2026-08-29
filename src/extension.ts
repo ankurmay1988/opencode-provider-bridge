@@ -320,7 +320,7 @@ async function refreshProviderCache(provider: BridgeProvider): Promise<void> {
 async function collectModels(
   providers: Map<string, OpencodeModelProvider>,
 ): Promise<vscode.LanguageModelChatInformation[]> {
-  const allModels: vscode.LanguageModelChatInformation[] = [];
+  let allModels: vscode.LanguageModelChatInformation[] = [];
   const silentOpts: vscode.PrepareLanguageModelChatModelOptions = { silent: true };
   const cts = new vscode.CancellationTokenSource();
   const token = cts.token;
@@ -328,23 +328,11 @@ async function collectModels(
   try {
     for (const [providerId, instance] of providers) {
       const models = await instance.provideLanguageModelChatInformation(silentOpts, token) ?? [];
-      for (const m of models) {
-        allModels.push({
-          id: `${providerId}/${m.id}`,
-          name: `${instance.providerInfo.name} - ${m.name}`,
-          family: providerId,
-          version: m.version,
-          maxInputTokens: m.maxInputTokens,
-          maxOutputTokens: m.maxOutputTokens,
-          capabilities: m.capabilities,
-          isUserSelectable: true,
-        });
-      }
+      allModels.push(...models);
     }
   } finally {
     cts.dispose();
   }
-
   return allModels;
 }
 

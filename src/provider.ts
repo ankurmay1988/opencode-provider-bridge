@@ -10,12 +10,18 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
+import {
+  ensureZenReasoningContent,
+  extractZenReasoning,
+  isDeepSeekModel,
+  withThinkingMetadata,
+  type ZenReasoningHistoryPart,
+} from './zenReasoning.js';
 
 const VERBOSE_FETCH = createVerboseFetch(globalThis.fetch);
 
-const REASONING_CONTENT_MIME = 'application/vnd.opencode-bridge.reasoning';
-
-export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
+export class OpencodeModelProvider
+  implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
 
@@ -107,10 +113,6 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       family: modelMeta?.family,
       apiUrl: modelMeta?.apiUrl,
       apiNpm: modelMeta?.apiNpm,
-      tool_call: modelMeta?.tool_call,
-      reasoning: modelMeta?.reasoning,
-      modalities: modelMeta?.modalities,
-      limits: modelMeta?.limit,
     }, null, 2)}`, 'debug');
 
     // Use per-model apiUrl if available, otherwise fall back to provider-level URL
@@ -141,7 +143,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         this.anthropicProvider = createAnthropic({
           name: this.providerInfo.id,
           baseURL: baseUrl,
-          authToken: this.apiKey,
+          apiKey: this.apiKey,
           fetch: VERBOSE_FETCH,
         });
       }
@@ -168,20 +170,9 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     const models: vscode.LanguageModelChatInformation[] = [];
 
     for (const [modelId, modelMeta] of this.enabledModels) {
-      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.tool_call} reasoning=${modelMeta.reasoning} ctx=${modelMeta.limit?.context ?? '?'}`, 'debug');
+      log(`[opencode-provider-bridge] REGISTER model="${modelId}" name="${modelMeta.name ?? modelId}" apiUrl="${modelMeta.apiUrl ?? '(none)'}" apiNpm="${modelMeta.apiNpm ?? '(none)'}" tool_call=${modelMeta.capabilities?.toolCalling ?? false} reasoning=${modelMeta.reasoning ?? false} ctx=${modelMeta.maxInputTokens ?? '?'}`, 'debug');
 
-      models.push({
-        id: modelId,
-        name: modelMeta.name || modelId,
-        family: modelMeta.family || 'unknown',
-        version: '1.0.0',
-        maxInputTokens: modelMeta.limit?.context ?? 128000,
-        maxOutputTokens: modelMeta.limit?.output ?? 4096,
-        capabilities: {
-          imageInput: !!(modelMeta.modalities?.input?.includes('image')),
-          toolCalling: modelMeta.tool_call ?? false,
-        },
-      });
+      models.push(modelMeta);
     }
 
     log(`[opencode-provider-bridge] Registered ${models.length} models for provider "${this.providerInfo.name}"`, 'info');
@@ -198,9 +189,35 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
     let currentReasoning = '';
     let reasoningEnded = false;
 
-    const coreMessages = this.toModelMessages(messages);
+    const modelMeta = this.enabledModels.get(model.id);
+    // DeepSeek thinking APIs require reasoning_content on every replayed
+    // assistant message (including VS Code's synthetic tool-call history).
+    // Only DeepSeek models are affected: Anthropic, Gemini, GPT, Grok,
+    // Kimi, GLM, Qwen, ... do not share that requirement, so the empty
+    // field is injected exclusively for DeepSeek reasoning models.
+    const deepSeekModel = isDeepSeekModel({
+      providerId: this.providerInfo.id,
+      modelId: model.id,
+      family: modelMeta?.family,
+      name: modelMeta?.name,
+    });
+    const ensureReasoningField = modelMeta?.reasoning === true && deepSeekModel;
+    const coreMessages = ensureZenReasoningContent(
+      this.toModelMessages(messages),
+      ensureReasoningField,
+    );
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
-    log(`[opencode-provider-bridge] FULL MESSAGES:\n${JSON.stringify(coreMessages, null, 2)}`, 'debug');
+    log(`[opencode-provider-bridge] MESSAGE DIAGNOSTICS ${JSON.stringify(coreMessages.map((message) => {
+      const content = Array.isArray(message.content) ? message.content : [];
+      const reasoning = content.filter((part: any) => part.type === 'reasoning');
+      return {
+        role: message.role,
+        parts: Array.isArray(message.content) ? content.length : 1,
+        reasoning: reasoning.length > 0,
+        reasoningLength: reasoning.reduce((length: number, part: any) => length + part.text.length, 0),
+        toolCalls: content.filter((part: any) => part.type === 'tool-call').length,
+      };
+    }))}`, 'debug');
 
     const tools: ToolSet = {};
     if (options.tools?.length) {
@@ -272,7 +289,12 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
             reasoningEnded = true;
             // Signal VS Code that reasoning is complete.
             // This closes the thinking animation in the chat response.
-            report(new vscode.LanguageModelThinkingPart('', undefined, { vscode_reasoning_done: true }));
+            {
+              report(withThinkingMetadata(
+                new vscode.LanguageModelThinkingPart(''),
+                { vscode_reasoning_done: true },
+              ));
+            }
             break;
 
           case 'tool-call':
@@ -314,23 +336,18 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
         }
       }
 
-      // Report final aggregated reasoning for multi-turn context.
-      // The real-time chunks above already rendered the thinking content;
-      // this provides the complete text as data for subsequent turns.
-      if (currentReasoning && !reasoningEnded) {
-        report(new vscode.LanguageModelThinkingPart(
-          '',
-          undefined,
-          { _completeThinking: currentReasoning, vscode_reasoning_done: true },
-        ));
-      } else if (currentReasoning && reasoningEnded) {
-        // reasoning-end already emitted vscode_reasoning_done.
-        // Only emit _completeThinking as data to avoid double-triggering the UI.
-        report(new vscode.LanguageModelDataPart(
-          new TextEncoder().encode(JSON.stringify({
+      // VS Code persists completed thinking from this metadata. Streaming
+      // thinking deltas render in the UI but are not sufficient for history.
+      // Do not replace this marker with a DataPart: custom DataParts are not
+      // returned in later LanguageModelChatRequestMessage history.
+      if (currentReasoning) {
+        log(`[opencode-provider-bridge] REASONING_OUT source=SSE length=${currentReasoning.length} ended=${reasoningEnded}`, 'debug');
+        report(withThinkingMetadata(
+          new vscode.LanguageModelThinkingPart(''),
+          {
             _completeThinking: currentReasoning,
-          })),
-          REASONING_CONTENT_MIME,
+            ...(reasoningEnded ? {} : { vscode_reasoning_done: true }),
+          },
         ));
       }
 
@@ -403,7 +420,7 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
       let toolCallId: string | undefined;
       let toolResultContent: string | undefined;
       let toolResultName: string | undefined;
-      let reasoningContent = '';
+      const reasoningParts: ZenReasoningHistoryPart[] = [];
 
       for (const part of msg.content) {
         if (part instanceof vscode.LanguageModelTextPart) {
@@ -436,13 +453,23 @@ export class OpencodeModelProvider implements vscode.LanguageModelChatProvider {
                 .map((c) => c.value)
                 .join('\n');
         } else if (part instanceof vscode.LanguageModelDataPart) {
-          if (part.mimeType === REASONING_CONTENT_MIME) {
-            const decoded = new TextDecoder().decode(part.data);
-            reasoningContent += decoded;
-          }
+          reasoningParts.push({
+            kind: 'data',
+            mimeType: part.mimeType,
+            data: part.data,
+          });
         } else if (part instanceof vscode.LanguageModelThinkingPart) {
-          reasoningContent += part.value ?? '';
+          reasoningParts.push({
+            kind: 'thinking',
+            value: part.value ?? '',
+            metadata: part.metadata,
+          });
         }
+      }
+
+      const reasoningContent = extractZenReasoning(reasoningParts);
+      if (reasoningParts.length > 0) {
+        log(`[opencode-provider-bridge] REASONING_HISTORY role=${msg.role} parts=${reasoningParts.length} restored=${reasoningContent.length > 0} length=${reasoningContent.length}`, 'debug');
       }
 
       if (msg.role === vscode.LanguageModelChatMessageRole.User) {
