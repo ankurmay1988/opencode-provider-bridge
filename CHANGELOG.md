@@ -4,6 +4,13 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.1] - 2026-08-30
+
+### Changed
+- Context Size is now **tier-gated**: it appears only for models whose registry entry declares `cost.tiers` with `tier.type === "context"` (e.g. gpt-5.4, gpt-5.6-luna, minimax-m3). Models without tiers — like `glm-5.3-flash`, which genuinely supports its full 1M window — no longer show a Context Size option. Removed the synthesized `context − output` fallback entirely.
+- For tiered models, the offered sizes are the declared tier sizes unioned with the full `limit.context` (e.g. gpt-5.6-luna: 272K + 1.05M). The selected default is the tier marked `default: true` in the API response, falling back to the smallest tier size.
+- Token counts in configuration UIs display rounded **down** (`formatTokenCount`), so 1,050,000 renders as "1M" — matching OpenCode's own UI and never overstating capacity. The underlying enum value remains exact.
+
 ## [0.7.0] - 2026-08-29
 
 ### Added

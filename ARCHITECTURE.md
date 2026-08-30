@@ -219,9 +219,20 @@ Models advertise a `configurationSchema` (built in `opencodeConfig.ts`:
 | Property | Group | Source | Default |
 |---|---|---|---|
 | `reasoningEffort` (Thinking Effort) | `navigation` | opencode per-model `variants` keys | `defaultEffort()` (medium if present, else first non-none) |
-| `contextSize` (Context Size) | `tokens` | `cost.tiers` context tier (default), `limit.context` (full) | full context |
+| `contextSize` (Context Size) | `tokens` | **only if the model declares `cost.tiers` with `tier.type === "context"`** — sizes = tier sizes ∪ full `limit.context` (when larger); default = tier marked `default: true`, else smallest tier | API-marked tier default |
 | `temperature` | — | only if `capabilities.temperature` | 1 |
 | `maxOutputTokens` | — | `limit.output` (half, full) | full |
+
+Context Size is **tier-gated**: models without context cost tiers (e.g.
+`glm-5.3-flash`, which genuinely supports its full 1M window) get no
+Context Size option at all. There is deliberately **no `context − output`
+fallback** — that synthesized "input budget" misrepresents models whose
+servers declare the full window. Tier `size` values are pricing thresholds,
+not exclusive sizes; the full `limit.context` is always unioned in (e.g.
+gpt-5.6-luna offers 272K + 1.05M). Token counts are displayed rounded
+**down** (`formatTokenCount`: 1,050,000 → "1M", 131,072 → "131K") so labels
+never overstate capacity, matching OpenCode's own UI; the underlying enum
+value stays exact.
 
 VS Code renders the `navigation`/`tokens` groups in the chat-input model picker;
 the other enum properties appear in Manage Models → Configure. The user's picks

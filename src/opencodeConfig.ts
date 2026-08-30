@@ -183,33 +183,62 @@ export function defaultEffort(variants: string[]): string {
   return firstEnabled ?? variants[0];
 }
 
-/** Formats a token count for display, e.g. 131072 → "131K", 1000000 → "1M". */
+/**
+ * Formats a token count for display, e.g. 131072 → "131K", 1000000 → "1M".
+ * Values are rounded DOWN (to the nearest 1K / 0.1M) so advertised sizes
+ * never overstate the true capacity — e.g. 1050000 displays as "1M",
+ * matching how OpenCode's own UI presents the same limit.
+ */
 function formatTokenCount(count: number): string {
   if (count >= 1_000_000) {
-    const m = count / 1_000_000;
-    return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
+    const m = Math.floor(count / 100_000) / 10;
+    return `${m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, '')}M`;
   }
   if (count >= 1_000) {
-    const k = count / 1_000;
-    return `${k >= 10 ? Math.round(k) : k.toFixed(1)}K`;
+    const k = Math.floor(count / 1_000);
+    return `${k}K`;
   }
   return String(count);
 }
 
 /**
- * Extracts the model's recommended default context size from its cost tiers.
+ * Extracts the model's context sizes from its cost tiers.
  *
  * opencode reports a `cost.tiers` array (not in the stale SDK `Model` type —
- * read via cast) where an entry with `tier.type === "context"` carries the
- * model's default context window in `tier.size` (e.g. 272K for gpt-5.4 whose
- * full window is 1M). This is the correct "Default" context size for the UI —
- * NOT `context - output`, which overstates it.
+ * read via cast) where an entry with `tier.type === "context"` carries a
+ * context-size threshold in `tier.size` (e.g. 272K for gpt-5.6-luna whose
+ * full window is 1.05M). A tier marks where pricing changes, not the only
+ * usable size — the model's full declared context window (`limit.context`)
+ * is also valid, so it is unioned into the offered sizes.
+ *
+ * Context Size is ONLY advertised when the model declares context tiers —
+ * no synthesized `context - output` fallback, which misrepresents models
+ * (e.g. GLM-5.3-Flash) that genuinely support their full declared window.
  */
-function defaultContextTokens(model: Model): number | undefined {
-  const tiers = (model.cost as { tiers?: Array<{ tier?: { type?: string; size?: number } }> }).tiers;
-  const contextTier = tiers?.find((t) => t.tier?.type === 'context');
-  const size = contextTier?.tier?.size;
-  return size !== undefined && Number.isFinite(size) && size > 0 ? size : undefined;
+function tierContextSizes(model: Model): { sizes: number[]; default: number | undefined } {
+  type ContextTier = { tier?: { type?: string; size?: number }; default?: boolean };
+  const tiers = (model.cost as Record<string, unknown> | undefined)?.tiers as ContextTier[] | undefined;
+  const contextSizes = (tiers ?? [])
+    .filter((t) => t.tier?.type === 'context')
+    .map((t) => t.tier?.size)
+    .filter((n): n is number => n !== undefined && Number.isFinite(n) && n > 0);
+  if (contextSizes.length === 0) {
+    return { sizes: [], default: undefined };
+  }
+  // The full declared context window is also a usable size — include it when
+  // it's larger than every tier threshold (e.g. gpt-5.6-luna: 272K tier + 1.05M).
+  const fullWindow = model.limit?.context;
+  if (fullWindow !== undefined && Number.isFinite(fullWindow) && fullWindow > Math.max(...contextSizes)) {
+    contextSizes.push(fullWindow);
+  }
+  // The API marks the recommended default with `default: true` on the tier;
+  // fall back to the smallest declared size.
+  const defaultTier = (tiers ?? []).find(
+    (t) => t.tier?.type === 'context' && t.default === true && t.tier?.size !== undefined,
+  );
+  const declaredDefault = defaultTier?.tier?.size ?? Math.min(...contextSizes);
+  const sizes = [...new Set(contextSizes)].sort((a, b) => a - b);
+  return { sizes, default: declaredDefault };
 }
 
 /**
@@ -217,8 +246,8 @@ function defaultContextTokens(model: Model): number | undefined {
  *
  * VS Code renders two groups in the chat-input model picker:
  *   - `navigation` → "Thinking Effort" (from opencode `variants`)
- *   - `tokens`     → "Context Size" (default from the model's cost tier vs
- *                    the full context window)
+ *   - `tokens`     → "Context Size" (only when the model declares context
+ *                    cost tiers, with the API-marked default selected)
  * Additional enum properties (temperature, max output tokens) appear as
  * submenus in the Manage Models → Configure menu.
  *
@@ -229,9 +258,8 @@ function defaultContextTokens(model: Model): number | undefined {
  */
 function buildModelConfigSchema(
   variantKeys: string[],
-  contextTokens: number | undefined,
+  contextTiers: { sizes: number[]; default: number | undefined },
   outputTokens: number | undefined,
-  defaultContextTokens: number | undefined,
   supportsTemperature: boolean,
 ): vscode.LanguageModelConfigurationSchema | undefined {
   const properties: Record<string, Record<string, unknown>> = {};
@@ -249,20 +277,20 @@ function buildModelConfigSchema(
     };
   }
 
-  // Context Size (tokens group) — default prompt budget vs full window.
-  // The default is the model's recommended context size from its cost tier
-  // (tier.type === "context"); fall back to context - output when no tier is
-  // declared and the window is larger than the output budget.
-  const defaultContext = defaultContextTokens
-    ?? (contextTokens && outputTokens && contextTokens > outputTokens ? contextTokens - outputTokens : undefined);
-  if (contextTokens && defaultContext && defaultContext < contextTokens) {
+  // Context Size (tokens group) — only for models that declare context cost
+  // tiers. The enum lists every declared context size, with the API-marked
+  // default (`default: true` on the tier) selected. Models without tiers get
+  // no Context Size option at all.
+  if (contextTiers.sizes.length > 0 && contextTiers.default !== undefined) {
     properties.contextSize = {
       type: 'number',
       title: 'Context Size',
-      enum: [defaultContext, contextTokens],
-      enumItemLabels: [formatTokenCount(defaultContext), formatTokenCount(contextTokens)],
-      enumDescriptions: ['Default recommended context size', 'Full context window'],
-      default: contextTokens,
+      enum: contextTiers.sizes,
+      enumItemLabels: contextTiers.sizes.map(formatTokenCount),
+      enumDescriptions: contextTiers.sizes.map(
+        (s) => (s === contextTiers.default ? 'Default recommended context size' : `Context size (${formatTokenCount(s)})`),
+      ),
+      default: contextTiers.default,
       group: 'tokens',
     };
   }
@@ -319,14 +347,14 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
   const hasDeclaredVariants = !!variants && Object.keys(variants).length > 0;
 
   // Build the model configuration schema: Thinking Effort (from variants),
-  // Context Size (from the context window), Temperature, and Max Output
-  // Tokens. VS Code renders the navigation/tokens groups in the chat-input
-  // model picker; other enum properties appear in Manage Models → Configure.
+  // Context Size (only when context cost tiers are declared), Temperature,
+  // and Max Output Tokens. VS Code renders the navigation/tokens groups in
+  // the chat-input model picker; other enum properties appear in
+  // Manage Models → Configure.
   const configurationSchema = buildModelConfigSchema(
     hasDeclaredVariants ? Object.keys(variants) : [],
-    model.limit?.context,
+    tierContextSizes(model),
     model.limit?.output,
-    defaultContextTokens(model),
     model.capabilities.temperature,
   );
 
