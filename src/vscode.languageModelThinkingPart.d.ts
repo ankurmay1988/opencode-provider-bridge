@@ -25,17 +25,16 @@ declare module 'vscode' {
 
 		/**
 		 * Optional metadata associated with this thinking sequence.
-		 * Mutable: VS Code's runtime ignores a third constructor argument,
-		 * so callers must assign metadata after constructing the part.
 		 */
-		metadata?: Record<string, unknown>;
+		metadata?: { readonly [key: string]: any };
 
 		/**
 		 * Construct a thinking part with the given content.
 		 * @param value The thinking text content.
 		 * @param id Optional unique identifier for this thinking sequence.
+		 * @param metadata Optional metadata associated with this thinking sequence.
 		 */
-		constructor(value: string | string[], id?: string);
+		constructor(value: string | string[], id?: string, metadata?: { readonly [key: string]: any });
 	}
 
 	export interface LanguageModelChatResponse {
@@ -108,3 +107,4 @@ declare module 'vscode' {
 	 */
 	export class LanguageModelToolResult2 extends LanguageModelToolResult { }
 }
+

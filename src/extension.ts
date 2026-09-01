@@ -26,7 +26,7 @@
 import * as vscode from 'vscode';
 
 import { disposeServer, ensureOpencodeServer, resetServerState } from './serverManager.js';
-import { initLogger, log } from './logger.js';
+import { initLogger, log, setDevMode } from './logger.js';
 
 import { OpencodeModelProvider } from './provider.js';
 import type { ProviderEntry } from './opencodeConfig.js';
@@ -58,8 +58,17 @@ let bridgeProvider: BridgeProvider | null = null;
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext) {
-  initLogger();
-  log('activate()', 'info');
+  const channel = initLogger();
+
+  // Extension Development Host detection via the official API — enables
+  // debug logging and shows the output channel for F5 debug sessions.
+  const isDev = context.extensionMode === vscode.ExtensionMode.Development;
+  setDevMode(isDev);
+  if (isDev) {
+    channel.show(true);
+  }
+  log(`activate() mode=${vscode.ExtensionMode[context.extensionMode]} debugLogging=${isDev}`, 'info');
+
   extContext = context;
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

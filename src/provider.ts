@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 
-import type { ModelMessage, ToolSet } from 'ai';
+import type { LanguageModelUsage, ModelMessage, ToolSet } from 'ai';
 import { defaultEffort, ModelsDevModel, ModelsDevProvider, type ReasoningVariant } from './opencodeConfig.js';
 import { extractTextFromToolResult, simplifySchema } from './providerUtils.js';
+import { buildUsagePayload } from './languageModelUsage.js';
 import { jsonSchema, streamText, tool } from 'ai';
 
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -63,7 +64,12 @@ export class OpencodeModelProvider
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
 
-  lastUsage: { prompt: number; completion: number } | null = null;
+  lastUsage: {
+    prompt: number;
+    completion: number;
+    cached?: number;
+    reasoning?: number;
+  } | null = null;
 
   /** OpenAI SDK provider instance (for models with api.npm = "@ai-sdk/openai"). */
   private openaiProvider: ReturnType<typeof createOpenAI> | null = null;
@@ -506,12 +512,26 @@ export class OpencodeModelProvider
             break;
 
           case 'finish': {
-            const { totalUsage } = part;
-            if (totalUsage) {
+            // AI SDK v6's finish part carries `totalUsage` (summed across all
+            // steps). Fall back to a defensive cast of `usage` since some
+            // providers only populate the step-level value.
+            const finishPart = part as { totalUsage?: LanguageModelUsage; usage?: LanguageModelUsage };
+            const usage = finishPart.totalUsage ?? finishPart.usage;
+            if (usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
               this.lastUsage = {
-                prompt: totalUsage.inputTokens ?? 0,
-                completion: totalUsage.outputTokens ?? 0,
+                prompt: usage.inputTokens ?? 0,
+                completion: usage.outputTokens ?? 0,
+                // Structured detail fields (v6); fall back to the deprecated
+                // top-level fields for older provider packages that still
+                // populate only those.
+                cached: usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens,
+                reasoning: usage.outputTokenDetails?.reasoningTokens ?? usage.reasoningTokens,
               };
+              log(`[opencode-provider-bridge] USAGE finish prompt=${this.lastUsage.prompt} completion=${this.lastUsage.completion} cached=${this.lastUsage.cached ?? '?'} reasoning=${this.lastUsage.reasoning ?? '?'}`, 'debug');
+            } else {
+              // Some providers (or misbehaving endpoints) return no usage at
+              // all. Log it so the "no token count" reports are diagnosable.
+              log(`[opencode-provider-bridge] USAGE finish event had no token counts: ${JSON.stringify(finishPart.usage ?? null)} / ${JSON.stringify(finishPart.totalUsage ?? null)}`, 'warn');
             }
             break;
           }
@@ -539,15 +559,15 @@ export class OpencodeModelProvider
         ));
       }
 
-      if (this.lastUsage) {
+      if (this.lastUsage && (this.lastUsage.prompt > 0 || this.lastUsage.completion > 0)) {
         report(new vscode.LanguageModelDataPart(
-          new TextEncoder().encode(JSON.stringify({
-            prompt_tokens: this.lastUsage.prompt,
-            completion_tokens: this.lastUsage.completion,
-            total_tokens: this.lastUsage.prompt + this.lastUsage.completion,
-          })),
+          new TextEncoder().encode(JSON.stringify(
+            buildUsagePayload(this.lastUsage),
+          )),
           'usage',
         ));
+      } else if (this.lastUsage) {
+        log(`[opencode-provider-bridge] USAGE skipped DataPart: prompt and completion are both 0 — provider returned no usage`, 'warn');
       }
 
       if (!hasText && !hasToolCall && !currentReasoning) {

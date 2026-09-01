@@ -321,7 +321,7 @@ The implementation has been verified against VS Code's official BYOK providers (
 | Thinking boundary | ✅ `reasoning-start` + `reasoning-end` | ✅ Via pending thinking state | ✅ Via `thoughtSignature` | ✅ Via `thinkingActive` flag |
 | Tool call reporting | ✅ `LanguageModelToolCallPart` | ✅ Same | ✅ Same | ✅ Same |
 | Tool result rendering | ✅ `LanguageModelToolResultPart` | ✅ Same | ✅ Same | ✅ Via internal deltas |
-| Token usage | ✅ `LanguageModelDataPart('usage')` | ✅ Same | ✅ Same | ✅ Same |
+| Token usage | ✅ `LanguageModelDataPart('usage')` via `buildUsagePayload()` (includes cached + reasoning details) | ✅ Same | ✅ Same | ✅ Same |
 | Error classification | ✅ Rate / Auth / Quota / Generic | ✅ Via internal framework | ✅ Same | ✅ Via `ChatFetchResponseType` |
 | Tool schema caching | ✅ Per-name cache | ✅ Built-in token counting | ✅ Built-in | ✅ Built-in |
 
@@ -352,6 +352,36 @@ Single `log(msg, level)` function with verbosity gating:
 | `debug` | always |
 
 Setting: `"opencode-provider-bridge.logLevel"` in VS Code settings.
+
+**Extension Development Host override:** when
+`context.extensionMode === vscode.ExtensionMode.Development` (F5 debug
+session), the threshold is forced to `debug` and the output channel is
+shown automatically at activation — no setting change needed while
+debugging. Detection uses the official `extensionMode` API (the
+`vscode.env.machineId` sentinel approach is unreliable in current builds).
+
+---
+
+## 9. Token Usage Reporting — `src/languageModelUsage.ts`
+
+The usage payload reported to Copilot is a typed, single-sourced contract:
+
+- `LanguageModelUsagePayload` — OpenAI-style shape. `prompt_tokens`,
+  `completion_tokens`, `total_tokens` MUST be numbers or Copilot's
+  `isApiUsage()` validation drops the part.
+- `buildUsagePayload()` — builds the payload, omitting empty detail
+  sections (`prompt_tokens_details.cached_tokens`,
+  `completion_tokens_details.reasoning_tokens`).
+
+Downstream chain (verified in `microsoft/vscode` main):
+`extChatEndpoint.ts` parses the part → `toolCallingLoop.ts` forwards
+`stream.usage()` → `chatContextUsageWidget` / Session-Info-style popup.
+
+Diagnostics: `USAGE finish prompt=… completion=…` at debug level; a warn
+is logged when the provider returns no counts (including the raw
+`usage`/`totalUsage` payloads). Note the per-response "Response details"
+footer requires `modelTotals` (agent-host sessions only) and is not
+reachable from third-party providers.
 
 ---
 

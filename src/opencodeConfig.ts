@@ -130,7 +130,10 @@ const USD_PER_CREDIT = 0.01;
 /** Converts a USD-per-1M-tokens price to VS Code AI credits per 1M tokens. */
 function usdToCredits(usd: number | undefined): number | undefined {
   if (usd === undefined || usd === null || !Number.isFinite(usd)) {return undefined;}
-  return usd / USD_PER_CREDIT;
+  // Round to a whole credit — credits are displayed as integers, and the
+  // raw division produces floating-point artifacts (0.154 / 0.01 →
+  // 15.399999999999999) that overflow the popup UI.
+  return Math.round(usd / USD_PER_CREDIT);
 }
 
 /** Formats a USD-per-1M-tokens price for display, e.g. "$0.14/M". */

@@ -4,6 +4,20 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.2] - 2026-09-01
+
+### Fixed
+- Token usage reporting no longer drops responses when the provider returns no token counts
+- Usage payload now includes cached and reasoning token details
+- Updated deprecated AI SDK v6 usage fields
+
+### Added
+- Debug logging and output channel auto-open in development host sessions
+- Typed token usage reporting contract (`languageModelUsage.ts`)
+
+### Changed
+- Synced proposed-API type definitions with VS Code main
+
 ## [0.7.1] - 2026-08-30
 
 ### Changed
