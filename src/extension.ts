@@ -270,20 +270,42 @@ async function refreshProviderCache(provider: BridgeProvider): Promise<void> {
 async function collectModels(
   providers: Map<string, OpencodeModelProvider>,
 ): Promise<vscode.LanguageModelChatInformation[]> {
-  let allModels: vscode.LanguageModelChatInformation[] = [];
+  const allModels: vscode.LanguageModelChatInformation[] = [];
   const silentOpts: vscode.PrepareLanguageModelChatModelOptions = { silent: true };
   const cts = new vscode.CancellationTokenSource();
   const token = cts.token;
 
   try {
-    for (const [providerId, instance] of providers) {
+    for (const [, instance] of providers) {
       const models = await instance.provideLanguageModelChatInformation(silentOpts, token) ?? [];
       allModels.push(...models);
     }
   } finally {
     cts.dispose();
   }
-  return allModels;
+  return dedupeModels(allModels);
+}
+
+/**
+ * Removes models with duplicate ids. The model picker renders one entry per
+ * returned element, so a duplicate id would surface as the same model listed
+ * twice — e.g. when VS Code merges snapshots taken across a background
+ * refresh that fired onDidChangeLanguageModelChatInformation.
+ */
+function dedupeModels(
+  models: vscode.LanguageModelChatInformation[],
+): vscode.LanguageModelChatInformation[] {
+  const seen = new Set<string>();
+  const unique: vscode.LanguageModelChatInformation[] = [];
+  for (const model of models) {
+    if (seen.has(model.id)) {
+      log(`[opencode-provider-bridge] DEDUPE dropped duplicate model id="${model.id}"`, 'debug');
+      continue;
+    }
+    seen.add(model.id);
+    unique.push(model);
+  }
+  return unique;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,15 +362,21 @@ class BridgeProvider implements vscode.LanguageModelChatProvider {
     options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelChatInformation[]> {
+    // Never hand VS Code our live cached array — it may hold onto a snapshot
+    // while a background refresh mutates state, and re-merging snapshots is
+    // how duplicate entries appear in the model picker. Always return a
+    // fresh, id-deduped copy.
+    const snapshot = dedupeModels(cachedModelsList);
+
     // Silent mode: always return cache immediately
-    if (options.silent && cachedModelsList.length > 0) {
-      return cachedModelsList;
+    if (options.silent && snapshot.length > 0) {
+      return snapshot;
     }
 
     // If cache is empty on first call, must wait for discovery
-    if (cachedModelsList.length === 0 && !refreshPromise) {
+    if (snapshot.length === 0 && !refreshPromise) {
       await refreshProviderCache(this);
-      return cachedModelsList;
+      return dedupeModels(cachedModelsList);
     }
 
     // If refresh is in progress, return current cache (may be empty initially)
@@ -356,12 +384,12 @@ class BridgeProvider implements vscode.LanguageModelChatProvider {
     if (refreshPromise) {
       // Don't await — fire background refresh and return whatever we have
       void refreshProviderCache(this);
-      return cachedModelsList;
+      return snapshot;
     }
 
     // Normal refresh
     void refreshProviderCache(this);
-    return cachedModelsList;
+    return snapshot;
   }
 
   async provideLanguageModelChatResponse(

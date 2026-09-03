@@ -2,3 +2,5 @@ node_modules
 dist
 .test-dist
 **/*.vsix
+.github
+AGENTS.md

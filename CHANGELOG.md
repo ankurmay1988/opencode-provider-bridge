@@ -4,6 +4,12 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.3] - 2026-09-03
+
+### Fixed
+- Model picker no longer shows duplicate model entries when reopened
+- Cache Write cost is now hidden for models that don't bill cache writes
+
 ## [0.7.2] - 2026-09-01
 
 ### Fixed

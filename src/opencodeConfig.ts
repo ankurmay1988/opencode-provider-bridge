@@ -136,6 +136,18 @@ function usdToCredits(usd: number | undefined): number | undefined {
   return Math.round(usd / USD_PER_CREDIT);
 }
 
+/**
+ * Converts a USD-per-1M-tokens cache-write price to AI credits, but only when
+ * the value is actually greater than zero. Many providers don't bill cache
+ * writes and report 0 — exposing 0 makes VS Code render a "Cache Write: 0"
+ * row in the model picker, so non-positive values are surfaced as undefined
+ * (the field is omitted by the UI).
+ */
+function positiveUsdToCredits(usd: number | undefined): number | undefined {
+  const credits = usdToCredits(usd);
+  return credits !== undefined && credits > 0 ? credits : undefined;
+}
+
 /** Formats a USD-per-1M-tokens price for display, e.g. "$0.14/M". */
 function formatUsdPerM(usd: number | undefined): string | undefined {
   if (usd === undefined || usd === null || !Number.isFinite(usd)) {return undefined;}
@@ -382,11 +394,11 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
     version: "1.0.0",
     pricing: pricingParts.length > 0 ? pricingParts.join(' · ') : undefined,
     cacheCost: usdToCredits(cacheReadUsd),
-    cacheWriteCost: usdToCredits(cacheWriteUsd),
+    cacheWriteCost: positiveUsdToCredits(cacheWriteUsd),
     inputCost: usdToCredits(inputUsd),
     outputCost: usdToCredits(outputUsd),
     longContextCacheCost: usdToCredits(longCacheReadUsd),
-    longContextCacheWriteCost: usdToCredits(longCacheWriteUsd),
+    longContextCacheWriteCost: positiveUsdToCredits(longCacheWriteUsd),
     longContextInputCost: usdToCredits(longInputUsd),
     longContextOutputCost: usdToCredits(longOutputUsd),
   };

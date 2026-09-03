@@ -144,6 +144,7 @@ The `BridgeProvider` implements `vscode.LanguageModelChatProvider` and acts as a
 ### Key Design Decisions
 
 - **Two-tier caching**: Models returned instantly from `cachedModelsList`; background refresh fires `onDidChangeLanguageModelChatInformation` when models change
+- **Snapshot + dedupe**: `provideLanguageModelChatInformation()` never returns the live cached array — it returns a fresh copy passed through `dedupeModels()` (id-based). VS Code can hold multiple snapshots across refresh events and re-merge them, which previously duplicated entries in the picker on second open. This matches upstream practice (Copilot Chat's `LanguageModelAccess` uses a `seenFamilies` Set; VS Code core keys models in an identifier-keyed `_modelCache`)
 - **Key prompting on use**: If `!provider.hasApiKey`, show dialog ONLY when user tries to chat — not on startup
 - **Token status bar**: After each response, shows `$(hubot) OC 452→123 (575) tok` (abbreviated format)
 - **Error classification**: Distinguishes rate limit (429), auth failure (401/403), and quota exceeded (402)
