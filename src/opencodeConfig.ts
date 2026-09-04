@@ -137,11 +137,12 @@ function usdToCredits(usd: number | undefined): number | undefined {
 }
 
 /**
- * Converts a USD-per-1M-tokens cache-write price to AI credits, but only when
- * the value is actually greater than zero. Many providers don't bill cache
- * writes and report 0 — exposing 0 makes VS Code render a "Cache Write: 0"
- * row in the model picker, so non-positive values are surfaced as undefined
- * (the field is omitted by the UI).
+ * Converts a USD-per-1M-tokens price to AI credits, but only when the value
+ * is actually greater than zero. Many providers don't bill cache
+ * reads/writes and report 0 — exposing 0 makes VS Code render a
+ * "Cache Read: 0" / "Cache Write: 0" row in the model picker, so
+ * non-positive values are surfaced as undefined (the field is omitted by
+ * the UI).
  */
 function positiveUsdToCredits(usd: number | undefined): number | undefined {
   const credits = usdToCredits(usd);
@@ -376,7 +377,14 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
   return {
     id: `${model.providerID}/${model.id}`,
     name: `${sp.name} - ${model.name}`,
-    family: model.providerID,
+    // Copilot gates PDF attachments on isAnthropicFamily(model) —
+    // family.startsWith('claude') || family.startsWith('Anthropic') — and
+    // otherwise renders the PDF as an omitted reference WITHOUT ever sending
+    // the bytes to the provider. Models routed via @ai-sdk/anthropic must
+    // therefore report the Anthropic family (matching upstream's own Anthropic
+    // BYOK provider, which also uses family 'Anthropic'). Routing no longer
+    // depends on family: it derives the provider id from the model id prefix.
+    family: model.api?.npm === '@ai-sdk/anthropic' ? 'Anthropic' : model.providerID,
     apiUrl: model.api?.url,            // exact endpoint from opencode's registry
     apiNpm: model.api?.npm,
     maxInputTokens: model.limit.context,
@@ -393,11 +401,15 @@ function sdkModelToDevModel(sp: Provider, model: Model): ModelsDevModel {
     temperature: model.capabilities.temperature,
     version: "1.0.0",
     pricing: pricingParts.length > 0 ? pricingParts.join(' · ') : undefined,
-    cacheCost: usdToCredits(cacheReadUsd),
+    // cache-read prices go through positiveUsdToCredits too: several
+    // providers report 0 for cache reads (no cache configured / free cache),
+    // and exposing 0 makes VS Code render a "Cache Read: 0" row in the
+    // model picker.
+    cacheCost: positiveUsdToCredits(cacheReadUsd),
     cacheWriteCost: positiveUsdToCredits(cacheWriteUsd),
     inputCost: usdToCredits(inputUsd),
     outputCost: usdToCredits(outputUsd),
-    longContextCacheCost: usdToCredits(longCacheReadUsd),
+    longContextCacheCost: positiveUsdToCredits(longCacheReadUsd),
     longContextCacheWriteCost: positiveUsdToCredits(longCacheWriteUsd),
     longContextInputCost: usdToCredits(longInputUsd),
     longContextOutputCost: usdToCredits(longOutputUsd),

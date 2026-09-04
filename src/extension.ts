@@ -57,7 +57,7 @@ let bridgeProvider: BridgeProvider | null = null;
 // ACTIVATION
 // ---------------------------------------------------------------------------
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   const channel = initLogger();
 
   // Extension Development Host detection via the official API — enables
@@ -68,6 +68,24 @@ export function activate(context: vscode.ExtensionContext) {
     channel.show(true);
   }
   log(`activate() mode=${vscode.ExtensionMode[context.extensionMode]} debugLogging=${isDev}`, 'info');
+
+  // Log the loaded extension version and compare it against the on-disk
+  // package.json. A mismatch (VS Code serving a stale/cached install) explains
+  // "my fix isn't applied" reports in both development and production
+  // environments — this line makes that immediately visible in the logs.
+  const loadedVersion: string = context.extension.packageJSON?.version ?? '(unknown)';
+  let diskVersion = '(unreadable)';
+  try {
+    const pkgRaw = await vscode.workspace.fs.readFile(
+      vscode.Uri.joinPath(context.extensionUri, 'package.json'),
+    );
+    diskVersion = (JSON.parse(Buffer.from(pkgRaw).toString('utf8')) as { version?: string }).version ?? '(unknown)';
+  } catch { /* keep placeholder */ }
+  if (loadedVersion === diskVersion) {
+    log(`Extension version v${loadedVersion} (loaded == package.json) id=${context.extension.id}`, 'info');
+  } else {
+    log(`Extension version MISMATCH — loaded=${loadedVersion} but package.json on disk=${diskVersion} id=${context.extension.id}`, 'warn');
+  }
 
   extContext = context;
 
@@ -399,7 +417,11 @@ class BridgeProvider implements vscode.LanguageModelChatProvider {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    const providerId = model.family;
+    // Routing must derive the provider id from the model id prefix
+    // ("providerID/modelId"), NOT from model.family: family is now
+    // 'Anthropic' for @ai-sdk/anthropic-routed models so that Copilot
+    // delivers PDF attachments (isAnthropicFamily gate upstream).
+    const providerId = model.id.slice(0, model.id.indexOf('/'));
     const providers = cachedProviders ?? await getProviders(extContext);
     const provider = providers.get(providerId);
 

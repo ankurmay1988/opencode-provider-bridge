@@ -4,6 +4,15 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.4] - 2026-09-04
+
+### Fixed
+- Files and images attached in chat are now visible to models
+- PDF attachments are sent natively to models that support documents and validated before sending
+- Model browser no longer lists every model twice after configuring model settings
+- Cache read cost no longer shows as zero in the model picker
+- Activation log now reports the loaded extension version and warns on a mismatch with the installed version
+
 ## [0.7.3] - 2026-09-03
 
 ### Fixed

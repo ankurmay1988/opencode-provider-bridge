@@ -309,6 +309,45 @@ Set `opencode-provider-bridge.logLevel` to `debug` to enable.
 | `LanguageModelChatMessageRole.System` | `{ role: 'system', content }` |
 | ToolResultPart name resolution | Looked up from `toolCallNameCache` by `callId`, warns on miss |
 
+### Attachments (`buildUserContent`)
+
+User attachments arrive as `LanguageModelDataPart`s and are routed by MIME
+type + the model's `apiNpm`. The builder returns the AI SDK's own
+`UserContent` type so every part literal is compile-checked:
+
+| Attachment | Handling |
+|---|---|
+| `image/*` | AI SDK `ImagePart` (`{ type: 'image', image, mediaType }`) |
+| `application/pdf`, valid `%PDF` magic bytes, `@ai-sdk/anthropic`/`@ai-sdk/google` | AI SDK `FilePart` — native document support (Anthropic document block / Gemini inline_data) |
+| `application/pdf`, invalid magic bytes | omitted with a note (mislabel would 400 at the provider — same validation Copilot's `FileVariable` applies) |
+| `application/pdf`, openai/openai-compatible | omitted with a note — OpenAI chat-completions has no raw-PDF wire format (matches upstream: `modelSupportsPDFDocuments()` gates PDFs to Anthropic family only) |
+| text-like (`text/*`, `application/json`) | decoded UTF-8 wrapped in `<attachment mime>` text part (upstream convention — Copilot renders file attachments the same way) |
+| other binaries (xlsx, docx, zip…) | omitted with a metadata note — upstream never inlines arbitrary binaries; content is expected via file tools when a path is available |
+| internal MIMEs (`usage`, Zen reasoning) | stripped, never forwarded as content |
+
+Note: binary DataParts carry only `{ mimeType, data }` — VS Code does not
+forward the attachment's file path to LM providers, so the model cannot
+`read_file` an attachment it only received as bytes. Path-based reading works
+when the user references the file (`#file`, typed path) and the agent harness
+supplies file tools.
+
+#### PDF delivery gate (family reporting)
+
+Whether PDF DataParts arrive at all is decided **upstream**, before our
+provider is called: Copilot's `FileVariable` only renders a PDF as a
+`Document` DataPart when the model has vision (`capabilities.imageInput`) and
+`modelSupportsPDFDocuments(endpoint)` returns true — which is exactly
+`isAnthropicFamily(model)` (`family.startsWith('claude') || family.startsWith('Anthropic')`).
+For all other families Copilot renders the attachment as an omitted reference
+("does not support PDF documents") and the provider receives nothing.
+
+Consequently, models routed via `@ai-sdk/anthropic` must report
+`family: 'Anthropic'` (matching upstream's own Anthropic BYOK provider) or
+their PDFs are silently dropped. Models on openai/openai-compatible wire
+formats can never receive PDF bytes from Copilot regardless of what we
+declare — that is upstream behavior. Routing no longer keys off `family`:
+the provider id is derived from the model id prefix (`providerId/modelId`).
+
 ---
 
 ## 6. BYOK Provider Parity

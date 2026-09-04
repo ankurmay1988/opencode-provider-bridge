@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import type { LanguageModelUsage, ModelMessage, ToolSet } from 'ai';
+import type { AssistantContent, FilePart, ImagePart, LanguageModelUsage, ModelMessage, TextPart, ToolSet, UserContent } from 'ai';
 import { defaultEffort, ModelsDevModel, ModelsDevProvider, type ReasoningVariant } from './opencodeConfig.js';
 import { extractTextFromToolResult, simplifySchema } from './providerUtils.js';
 import { buildUsagePayload } from './languageModelUsage.js';
@@ -13,6 +13,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
 import {
+  ZEN_REASONING_CONTENT_MIME,
   ensureZenReasoningContent,
   extractZenReasoning,
   isDeepSeekModel,
@@ -387,7 +388,7 @@ export class OpencodeModelProvider
     });
     const ensureReasoningField = modelMeta?.reasoning === true && deepSeekModel;
     const coreMessages = ensureZenReasoningContent(
-      this.toModelMessages(messages),
+      this.toModelMessages(messages, modelMeta?.apiNpm),
       ensureReasoningField,
     );
     log(`[opencode-provider-bridge] Converted ${coreMessages.length} messages for model=${model.id}`, 'debug');
@@ -612,8 +613,126 @@ export class OpencodeModelProvider
     return Math.max(1, Math.ceil(serialized.length / 4));
   }
 
+  /** Internal mime types that must never be forwarded as message content. */
+  private static readonly INTERNAL_DATA_MIMES = new Set<string>([
+    ZEN_REASONING_CONTENT_MIME,
+    'usage', // our own usage payload (languageModelUsage.ts)
+    'application/vnd.ai-sdk.usage',
+  ]);
+
+  private static isImageMime(mimeType: string): boolean {
+    return mimeType.startsWith('image/');
+  }
+
+  /**
+   * AI SDK packages whose wire format accepts native document (PDF) parts.
+   * Anthropic converts them to document blocks; Google to inline_data with
+   * the pdf mime. The OpenAI chat-completions wire format only accepts PDFs
+   * via uploaded file ids, which we don't have — so PDFs degrade there.
+   */
+  private static supportsNativePdf(apiNpm: string | undefined): boolean {
+    return apiNpm === '@ai-sdk/anthropic' || apiNpm === '@ai-sdk/google';
+  }
+
+  /**
+   * Builds AI SDK user-message content from text parts and attachment
+   * DataParts. Returns the AI SDK's own `UserContent` type, so every pushed
+   * part literal is compile-checked against the SDK's part union
+   * (`TextPart | ImagePart | FilePart`) — no ad-hoc shapes.
+   *
+   * VS Code delivers chat attachments as `LanguageModelDataPart`s:
+   *   - images           → `image/*` mime types (ChatImageMimeType upstream)
+   *   - attached/pasted
+   *     text content     → `text/plain` (`LanguageModelDataPart.text()` upstream)
+   *   - PDFs             → `application/pdf` binary data
+   *   - other binaries
+   *     (xlsx, docx, …)  → raw bytes with the sender's mime type
+   *
+   * Routing by the model's `apiNpm`:
+   *   - PDFs on anthropic/google → native AI SDK `FilePart`s (the SDK
+   *     serializes to the provider's wire format: Anthropic document block,
+   *     Gemini inline_data)
+   *   - other binaries           → omitted with a metadata note, matching
+   *     upstream practice (Copilot never inlines arbitrary binaries either);
+   *     content is expected to come via file tools when a path is available
+   * Unknown/internal data parts are stripped — the same "strip unknown parts"
+   * behavior VS Code core applies in `extHostTypeConverters.LanguageModelChatMessage2.from`.
+   */
+  private static buildUserContent(
+    textParts: string[],
+    dataParts: readonly vscode.LanguageModelDataPart[],
+    apiNpm: string | undefined,
+  ): UserContent | undefined {
+    const content: Array<TextPart | ImagePart | FilePart> = [];
+
+    const text = textParts.join('\n');
+    if (text) {
+      content.push({ type: 'text', text });
+    }
+
+    for (const part of dataParts) {
+      const mime = part.mimeType.toLowerCase();
+      if (OpencodeModelProvider.INTERNAL_DATA_MIMES.has(mime)) {
+        continue;
+      }
+      const bytes = part.data.byteLength;
+      if (OpencodeModelProvider.isImageMime(mime)) {
+        log(`[opencode-provider-bridge] convert: Attachment image mime=${mime} bytes=${bytes}`, 'debug');
+        content.push({ type: 'image', image: part.data, mediaType: mime });
+      } else if (mime === 'application/pdf') {
+        // Validate PDF magic bytes (%PDF = 0x25 0x50 0x44 0x46) before any
+        // native send — a mislabeled non-PDF would 400 at the provider. Same
+        // validation Copilot applies in FileVariable before rendering PDFs.
+        const isPdf = part.data.length >= 4
+          && part.data[0] === 0x25 && part.data[1] === 0x50
+          && part.data[2] === 0x44 && part.data[3] === 0x46;
+        if (!isPdf) {
+          log(`[opencode-provider-bridge] convert: Rejected invalid PDF (missing %PDF magic bytes) bytes=${bytes}`, 'warn');
+          content.push({
+            type: 'text',
+            text: `<attachment mime="application/pdf" size="${bytes}" omitted="invalid-pdf">The user attached a file claiming to be a PDF, but its content is not a valid PDF document.</attachment>`,
+          });
+        } else if (OpencodeModelProvider.supportsNativePdf(apiNpm)) {
+          log(`[opencode-provider-bridge] convert: Attachment pdf via native file part bytes=${bytes} apiNpm=${apiNpm}`, 'debug');
+          content.push({ type: 'file', data: part.data, mediaType: mime });
+        } else {
+          // PDF on a wire format without native document support (openai /
+          // openai-compatible): the file itself can't be inlined, so surface
+          // its presence and let the model request content via tools.
+          log(`[opencode-provider-bridge] convert: PDF not supported by ${apiNpm} wire format — degraded to metadata note`, 'debug');
+          content.push({
+            type: 'text',
+            text: `<attachment mime="application/pdf" size="${bytes}" omitted="unsupported-transport">The user attached a PDF document (${bytes} bytes) that cannot be sent inline to this model. Do not claim you cannot see any file — a PDF attachment IS present. If you have file tools available (read_file, file_search, grep_search), use them to locate and read the PDF (ask the user for its path if it is not evident from the conversation), then summarize or answer from its content.</attachment>`,
+          });
+        }
+      } else {
+        // Arbitrary binary (xlsx, docx, zip, …): omitted, matching upstream —
+        // Copilot never base64-inlines arbitrary binaries either; they are
+        // surfaced as an omitted attachment and content is expected to come
+        // via file tools when a path is available. No raw bytes reach the
+        // prompt, so context is never wasted on undecodable payloads.
+        log(`[opencode-provider-bridge] convert: Omitted binary attachment mime=${mime} bytes=${bytes}`, 'debug');
+        content.push({
+          type: 'text',
+          text: `<attachment mime="${mime}" size="${bytes}" omitted="binary">The user attached a binary file of type ${mime} (${bytes} bytes). Its content is not included. Do not claim you cannot see any file — a binary attachment IS present. If you have file tools available (read_file, file_search, grep_search), use them to locate and read the file (ask the user for its path if it is not evident from the conversation).</attachment>`,
+        });
+      }
+    }
+
+    if (content.length === 0) {
+      return undefined;
+    }
+    // Single plain-text part stays a plain string (unchanged behavior for
+    // requests without attachments).
+    if (content.length === 1 && content[0].type === 'text') {
+      return content[0].text as string;
+    }
+    return content;
+  }
+
   private toModelMessages(
     messages: readonly vscode.LanguageModelChatRequestMessage[],
+    apiNpm?: string,
   ): ModelMessage[] {
     const result: ModelMessage[] = [];
     const SystemRole = (vscode.LanguageModelChatMessageRole as any).System;
@@ -629,6 +748,10 @@ export class OpencodeModelProvider
       let toolResultContent: string | undefined;
       let toolResultName: string | undefined;
       const reasoningParts: ZenReasoningHistoryPart[] = [];
+      // VS Code delivers user attachments (images, pasted/attached files) as
+      // LanguageModelDataParts. They must be converted to AI SDK content
+      // parts — dropping them makes the model respond "cannot find file".
+      const dataParts: vscode.LanguageModelDataPart[] = [];
 
       for (const part of msg.content) {
         if (part instanceof vscode.LanguageModelTextPart) {
@@ -661,11 +784,15 @@ export class OpencodeModelProvider
                 .map((c) => c.value)
                 .join('\n');
         } else if (part instanceof vscode.LanguageModelDataPart) {
-          reasoningParts.push({
-            kind: 'data',
-            mimeType: part.mimeType,
-            data: part.data,
-          });
+          if (part.mimeType === ZEN_REASONING_CONTENT_MIME) {
+            reasoningParts.push({
+              kind: 'data',
+              mimeType: part.mimeType,
+              data: part.data,
+            });
+          } else {
+            dataParts.push(part);
+          }
         } else if (part instanceof vscode.LanguageModelThinkingPart) {
           reasoningParts.push({
             kind: 'thinking',
@@ -679,11 +806,21 @@ export class OpencodeModelProvider
       if (reasoningParts.length > 0) {
         log(`[opencode-provider-bridge] REASONING_HISTORY role=${msg.role} parts=${reasoningParts.length} restored=${reasoningContent.length > 0} length=${reasoningContent.length}`, 'debug');
       }
+      // Per-message summary of what VS Code delivered: counts by kind, plus
+      // mime/bytes for attachment DataParts. Enough to diagnose attachment
+      // delivery without dumping message text into the log.
+      if (msg.role === vscode.LanguageModelChatMessageRole.User && (textParts.length > 0 || dataParts.length > 0)) {
+        const attachmentSummary = dataParts.map((p) => `${p.mimeType}:${p.data?.byteLength ?? 0}b`).join(',') || 'none';
+        log(`[opencode-provider-bridge] INBOUND user message textParts=${textParts.length} dataParts=[${attachmentSummary}]`, 'debug');
+      }
 
       if (msg.role === vscode.LanguageModelChatMessageRole.User) {
-        if (textParts.length > 0) {
-          result.push({ role: 'user', content: textParts.join('\n') });
+        const userContent = OpencodeModelProvider.buildUserContent(textParts, dataParts, apiNpm);
+        if (userContent !== undefined) {
+          result.push({ role: 'user', content: userContent } as ModelMessage);
         }
+        // Tool results arrive on user-role messages; they must still be
+        // forwarded even when the message also carries attachments.
         if (toolCallId && toolResultContent !== undefined) {
           const resolvedName = toolResultName ?? 'unknown';
           if (resolvedName === 'unknown') {
@@ -708,7 +845,7 @@ export class OpencodeModelProvider
         }
       } else {
         const text = textParts.join('\n');
-        const contentParts: Array<Record<string, unknown>> = [];
+        const contentParts: AssistantContent = [];
 
         if (text) {
           contentParts.push({ type: 'text', text });
