@@ -7,6 +7,7 @@
 // The wrapper is transparent — all responses pass through unchanged.
 // =============================================================================
 
+import { createOpenCodeSessionFetch } from './opencodeSession.js';
 import { log } from './logger.js';
 
 function reasoningLengths(value: unknown): number[] {
@@ -36,6 +37,8 @@ function summarizeJson(value: unknown): string {
  * at debug log level.
  */
 export function createVerboseFetch(originalFetch: typeof globalThis.fetch): typeof globalThis.fetch {
+  const fetchWithSession = createOpenCodeSessionFetch(originalFetch);
+
   return async function verboseFetch(
     input: Parameters<typeof globalThis.fetch>[0],
     init?: Parameters<typeof globalThis.fetch>[1],
@@ -54,13 +57,13 @@ export function createVerboseFetch(originalFetch: typeof globalThis.fetch): type
       }
     }
 
-    const response = await originalFetch(input, init);
+    const response = await fetchWithSession(input, init);
+
+    const contentType = response.headers.get('content-type') ?? '';
+    log(`[opencode-provider-bridge] RESPONSE status=${response.status} ct=${contentType}`, 'debug');
 
     if (!response.ok || !response.body) {return response;}
-    const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('text/event-stream') && !url.includes('/chat/completions')) {return response;}
-
-    log(`[opencode-provider-bridge] RESPONSE status=${response.status} ct=${contentType}`, 'debug');
 
     if (!contentType.includes('text/event-stream')) {return response;}
 

@@ -12,6 +12,14 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createVerboseFetch } from './verboseFetch.js';
 import { log } from './logger.js';
+import { classifyProviderError } from './providerErrors.js';
+import {
+  extractFirstUserMessageText,
+  isOpenCodeSessionProvider,
+  resolveOpenCodeSessionId,
+  runWithOpenCodeSessionContext,
+  type OpenCodeSessionContext,
+} from './opencodeSession.js';
 import {
   ZEN_REASONING_CONTENT_MIME,
   ensureZenReasoningContent,
@@ -122,7 +130,7 @@ export class OpencodeModelProvider
   private getBaseUrl(): string {
     const knownApis: Record<string, string> = {
       opencode: 'https://opencode.ai/zen/v1',
-      'opencode-go': 'https://opencode.ai/go/v1',
+      'opencode-go': 'https://opencode.ai/zen/go/v1',
     };
     return this.providerInfo.api || knownApis[this.providerInfo.id] || `https://api.${this.providerInfo.id}.com/v1`;
   }
@@ -354,6 +362,47 @@ export class OpencodeModelProvider
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    const providerId = this.providerInfo.id;
+    let sessionContext: OpenCodeSessionContext | undefined;
+
+    if (isOpenCodeSessionProvider(providerId)) {
+      // `_conversationId` is internal to VS Code/Copilot Chat and is not part
+      // of the public language-model provider API. Keep the access guarded.
+      const modelOptions = (options as vscode.ProvideLanguageModelChatResponseOptions & {
+        modelOptions?: { _conversationId?: unknown };
+      }).modelOptions;
+      const firstUserMessageText = extractFirstUserMessageText(
+        messages,
+        vscode.LanguageModelChatMessageRole.User,
+        (part) => part instanceof vscode.LanguageModelTextPart ? part.value : undefined,
+      );
+      const sessionId = resolveOpenCodeSessionId(
+        providerId,
+        modelOptions?._conversationId,
+        firstUserMessageText,
+      );
+
+      if (sessionId) {
+        sessionContext = { providerId, sessionId };
+      } else {
+        log(`[opencode-provider-bridge] No conversation ID available for provider="${providerId}"; continuing without a session header`, 'warn');
+      }
+    }
+
+    // Run even non-target requests in an empty scope so an inherited async
+    // context can never accidentally attach a different request's header.
+    return runWithOpenCodeSessionContext(sessionContext, () =>
+      this.provideLanguageModelChatResponseCore(model, messages, options, progress, token),
+    );
+  }
+
+  private async provideLanguageModelChatResponseCore(
+    model: vscode.LanguageModelChatInformation,
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
     let currentReasoning = '';
     let reasoningEnded = false;
 
@@ -579,27 +628,33 @@ export class OpencodeModelProvider
       if (err instanceof vscode.LanguageModelError) {throw err;}
 
       // Classify common error types
-      const message = (err as Error).message?.toLowerCase() ?? '';
+      const message = (err as Error).message ?? 'Unknown provider error';
       const statusCode = (err as any).status ?? (err as any).statusCode ?? 0;
+      const kind = classifyProviderError(statusCode, message);
 
-      if (statusCode === 429 || message.includes('rate limit') || message.includes('too many')) {
+      if (kind === 'rate-limit') {
         throw vscode.LanguageModelError.Blocked(
           `${this.providerInfo.name}: rate limited. Please wait and try again.`,
         );
       }
-      if (statusCode === 401 || statusCode === 403 || message.includes('unauthorized') || message.includes('invalid api key')) {
+      if (kind === 'invalid-key') {
         throw vscode.LanguageModelError.NotFound(
           `${this.providerInfo.name}: invalid API key. Use "OpenCode Bridge: Set API Key" to update it.`,
         );
       }
-      if (statusCode === 402 || message.includes('quota') || message.includes('insufficient_quota')) {
+      if (kind === 'quota') {
         throw new vscode.LanguageModelError(
           `${this.providerInfo.name}: quota exceeded. Please check your plan and billing.`,
         );
       }
+      if (kind === 'authentication' || kind === 'access') {
+        throw vscode.LanguageModelError.NotFound(
+          `${this.providerInfo.name}: ${message}`,
+        );
+      }
 
       throw new vscode.LanguageModelError(
-        `${this.providerInfo.name} request failed: ${(err as Error).message}`,
+        `${this.providerInfo.name} request failed: ${message}`,
       );
     }
   }

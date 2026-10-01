@@ -110,7 +110,7 @@ const DEFAULT_SDK_PORT = 4096;
  */
 const KNOWN_PROVIDERS: Record<string, { name: string; api: string }> = {
   opencode:      { name: 'OpenCode Zen', api: 'https://opencode.ai/zen/v1' },
-  'opencode-go': { name: 'OpenCode Go',  api: 'https://opencode.ai/go/v1' },
+  'opencode-go': { name: 'OpenCode Go',  api: 'https://opencode.ai/zen/go/v1' },
 };
 
 // ---------------------------------------------------------------------------

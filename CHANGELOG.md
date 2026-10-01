@@ -4,6 +4,12 @@ All notable changes to the "opencode-provider-bridge" extension will be document
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.5] - 2026-10-01
+
+### Fixed
+- Improved conversation continuity for OpenCode Zen and Go.
+- Subscription and access errors are no longer reported as invalid API keys.
+
 ## [0.7.4] - 2026-09-04
 
 ### Fixed
