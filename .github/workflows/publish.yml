@@ -38,6 +38,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Azure Login
+        uses: Azure/login@v3.0.2
+        with:
+          # ClientId of the Azure Service principal created.
+          client-id: '336cb408-37e8-4198-af0a-58daaee7969d'
+          # TenantId of the Azure Service principal created.
+          tenant-id: '31798997-cabb-4bb5-a83d-bc06837663e5'
+          # Set this value to true to enable Azure PowerShell Login in addition to Azure CLI login
+          enable-AzPSSession: true
+          # Set this value to true to enable support for accessing tenants without subscriptions
+          allow-no-subscriptions: true
+          
       - name: Get current extension version
         uses: Azure/cli@v3
         with:
