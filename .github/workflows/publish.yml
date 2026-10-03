@@ -47,7 +47,7 @@ jobs:
           # TenantId of the Azure Service principal created.
           tenant-id: '31798997-cabb-4bb5-a83d-bc06837663e5'
           # Set this value to true to enable Azure PowerShell Login in addition to Azure CLI login
-          enable-AzPSSession: true
+          enable-AzPSSession: false
           # Set this value to true to enable support for accessing tenants without subscriptions
           allow-no-subscriptions: true
           
@@ -55,10 +55,9 @@ jobs:
         uses: Azure/cli@v3
         with:
           inlineScript: |
-            $EXT_INFO=npx vsce show AnkurMathur.opencode-provider-bridge --json | ConvertFrom-Json
-            $EXT_VERSION=$EXT_INFO.versions[0].version
-            "Current deployed extension version is $EXT_VERSION" >> $env:GITHUB_STEP_SUMMARY
-            echo "EXT_VERSION=$EXT_VERSION" >> $env:GITHUB_OUTPUT
+            EXT_VERSION=$(npx vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
+            "Current deployed extension version is $EXT_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "EXT_VERSION=$EXT_VERSION" >> $GITHUB_OUTPUT
 
       - name: Check for version bump
         id: version-check
