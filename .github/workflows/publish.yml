@@ -49,20 +49,15 @@ jobs:
           # Set this value to true to enable Azure PowerShell Login in addition to Azure CLI login
           enable-AzPSSession: false
           # Set this value to true to enable support for accessing tenants without subscriptions
-          allow-no-subscriptions: true
-          
-      - name: Get current extension version
-        uses: Azure/cli@v3
-        with:
-          inlineScript: |
-            EXT_VERSION=$(npx vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
-            "Current deployed extension version is $EXT_VERSION" >> $GITHUB_STEP_SUMMARY
-            echo "EXT_VERSION=$EXT_VERSION" >> $GITHUB_OUTPUT
+          allow-no-subscriptions: true            
 
       - name: Check for version bump
         id: version-check
         shell: bash
         run: |
+          EXT_VERSION=$(npx vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
+          "Current deployed extension version is $EXT_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "EXT_VERSION=$EXT_VERSION" >> "$GITHUB_OUTPUT"
           CURR_VERSION=$(node -p "require('./package.json').version")
           PREV_VERSION=$EXT_VERSION
           echo "Current version:  $CURR_VERSION"
@@ -82,13 +77,17 @@ jobs:
         if: steps.version-check.outputs.bumped == 'true'
         run: npx vsce package
       
-      - name: Azure CLI Action
-        uses: Azure/cli@v3
+      # - name: Azure CLI Action
+      #   uses: Azure/cli@v3
+      #   if: steps.version-check.outputs.bumped == 'true'
+      #   with:
+      #     # Specify the script here
+      #     inlineScript: |
+      #       npx vsce publish --packagePath *.vsix --azure-credential
+
+      - name: Publish to Visual Studio Marketplace
         if: steps.version-check.outputs.bumped == 'true'
-        with:
-          # Specify the script here
-          inlineScript: |
-            npx vsce publish --packagePath *.vsix --azure-credential
+        run: npx vsce publish --packagePath *.vsix --azure-credential
             
       # - name: Publish to Visual Studio Marketplace
       #   if: steps.version-check.outputs.bumped == 'true'
