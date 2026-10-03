@@ -63,10 +63,18 @@ jobs:
       - name: Package extension (.vsix)
         if: steps.version-check.outputs.bumped == 'true'
         run: npx vsce package
-
-      - name: Publish to Visual Studio Marketplace
+      
+      - name: Azure CLI Action
+        uses: Azure/cli@v3
         if: steps.version-check.outputs.bumped == 'true'
-        run: npx vsce publish --packagePath *.vsix -p ${{ secrets.VSCE_PAT }}
+        with:
+          # Specify the script here
+          inlineScript: |
+            npx vsce publish --packagePath *.vsix --azure-credential
+            
+      # - name: Publish to Visual Studio Marketplace
+      #   if: steps.version-check.outputs.bumped == 'true'
+      #   run: npx vsce publish --packagePath *.vsix -p ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX Registry
         if: steps.version-check.outputs.bumped == 'true' && env.OVSX_PAT != ''
