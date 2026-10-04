@@ -40,7 +40,7 @@ jobs:
         run: npm ci
         
       - name: Install VSCE
-        run: npm install @vscode/vsce
+        run: npm install @vscode/vsce --global
 
       - name: Azure Login
         uses: Azure/login@v3.0.2
@@ -58,11 +58,9 @@ jobs:
         id: version-check
         shell: bash
         run: |
-          EXT_VERSION=$(vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
-          "Current deployed extension version is $EXT_VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "EXT_VERSION=$EXT_VERSION" >> "$GITHUB_OUTPUT"
+          PREV_VERSION=$(vsce show AnkurMathur.opencode-provider-bridge --json | jq -r 'versions[0].version')
+          echo "Current deployed extension version is $PREV_VERSION" >> "$GITHUB_STEP_SUMMARY"
           CURR_VERSION=$(node -p "require('./package.json').version")
-          PREV_VERSION=$EXT_VERSION
           echo "Current version:  $CURR_VERSION"
           echo "Previous version: $PREV_VERSION"
           if [ "$CURR_VERSION" != "$PREV_VERSION" ]; then
@@ -97,10 +95,8 @@ jobs:
       #   run: npx vsce publish --packagePath *.vsix -p ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX Registry
-        if: steps.version-check.outputs.bumped == 'true' && env.OVSX_PAT != ''
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx ovsx publish *.vsix -p "$OVSX_PAT"
+        if: steps.version-check.outputs.bumped == 'true'
+        run: ovsx publish *.vsix --azure-credential
         continue-on-error: true
 
       - name: Tag release
