@@ -38,6 +38,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        
+      - name: Install VSCE
+        run: npm install @vscode/vsce
 
       - name: Azure Login
         uses: Azure/login@v3.0.2
