@@ -54,12 +54,12 @@ jobs:
           # Set this value to true to enable support for accessing tenants without subscriptions
           allow-no-subscriptions: true
       
-      - name: Azure CLI Action
-        uses: Azure/cli@v3
-        with:
-          # Specify the script here
-          inlineScript: |
-            az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798
+      # - name: Get Azure Devops App ID
+      #   uses: Azure/cli@v3
+      #   with:
+      #     # Specify the script here
+      #     inlineScript: |
+      #       az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798
 
       - name: Check for version bump
         id: version-check
