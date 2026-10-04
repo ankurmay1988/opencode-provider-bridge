@@ -52,7 +52,14 @@ jobs:
           # Set this value to true to enable Azure PowerShell Login in addition to Azure CLI login
           enable-AzPSSession: false
           # Set this value to true to enable support for accessing tenants without subscriptions
-          allow-no-subscriptions: true            
+          allow-no-subscriptions: true
+      
+      - name: Azure CLI Action
+        uses: Azure/cli@v3
+        with:
+          # Specify the script here
+          inlineScript: |
+            az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798
 
       - name: Check for version bump
         id: version-check
@@ -77,14 +84,6 @@ jobs:
       - name: Package extension (.vsix)
         if: steps.version-check.outputs.bumped == 'true'
         run: npx vsce package
-      
-      # - name: Azure CLI Action
-      #   uses: Azure/cli@v3
-      #   if: steps.version-check.outputs.bumped == 'true'
-      #   with:
-      #     # Specify the script here
-      #     inlineScript: |
-      #       npx vsce publish --packagePath *.vsix --azure-credential
 
       - name: Publish to Visual Studio Marketplace
         if: steps.version-check.outputs.bumped == 'true'
