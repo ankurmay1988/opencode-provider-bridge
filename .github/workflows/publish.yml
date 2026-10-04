@@ -55,7 +55,7 @@ jobs:
         id: version-check
         shell: bash
         run: |
-          EXT_VERSION=$(npx vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
+          EXT_VERSION=$(vsce show AnkurMathur.opencode-provider-bridge --json | jq 'versions[0].version')
           "Current deployed extension version is $EXT_VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "EXT_VERSION=$EXT_VERSION" >> "$GITHUB_OUTPUT"
           CURR_VERSION=$(node -p "require('./package.json').version")
